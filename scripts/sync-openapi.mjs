@@ -238,8 +238,11 @@ function buildManifest(spec) {
         excludedOperations.push({ method: method.toUpperCase(), path });
         continue;
       }
+      // Secured by a per-integration shared secret the caller supplies, not by
+      // a user token, so it is not part of the public client surface. Counted
+      // with the admin exclusions below, which are derived from
+      // `excludedOperations` rather than tallied here.
       if (isCustomLlmSecretOperation(operation)) {
-        excludedAdminOperationCount += 1;
         excludedOperations.push({ method: method.toUpperCase(), path });
         continue;
       }
