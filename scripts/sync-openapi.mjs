@@ -269,7 +269,16 @@ function buildManifest(spec) {
   const excludedAdminOperationCount = excludedOperations.length -
     excludedWebhookOperationCount;
 
+  // Skip any supplemental entry the spec already describes. The supplemental
+  // list exists for operations the DEPLOYED document omits; when this script is
+  // fed a local spec (`--input`) that does describe them, appending
+  // unconditionally emits the route twice and PUBLIC_ROUTES ends up with
+  // duplicates that `generated_rust_routes_match_the_public_manifest` rejects.
+  const describedOperations = new Set(
+    publicOperations.map(({ method, path }) => `${method} ${path}`),
+  );
   for (const [method, path] of SUPPLEMENTAL_PUBLIC_OPERATIONS) {
+    if (describedOperations.has(`${method} ${path}`)) continue;
     publicOperations.push({
       method,
       namespace: namespaceFor(path),
