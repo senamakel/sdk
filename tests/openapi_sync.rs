@@ -136,7 +136,7 @@ fn generated_rust_routes_match_the_public_manifest() {
 
     assert_eq!(manifest["source"]["operationCount"], 224);
     assert_eq!(manifest["source"]["supplementalOperationCount"], 14);
-    assert_eq!(manifest["source"]["excludedAdminOperationCount"], 32);
+    assert_eq!(manifest["source"]["excludedAdminOperationCount"], 37);
     assert_eq!(manifest["source"]["excludedWebhookOperationCount"], 12);
     assert_eq!(rust_routes.len(), 224);
     assert_eq!(rust_routes, manifest_routes);
