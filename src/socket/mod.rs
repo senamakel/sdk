@@ -42,6 +42,8 @@ pub struct SocketConnectOptions {
 }
 
 impl SocketConnectOptions {
+    /// Create bounded single-attempt options with the default ten-second
+    /// connect and two-second close deadlines.
     pub fn new() -> Self {
         Self::default()
     }
@@ -85,8 +87,11 @@ impl Default for SocketConnectOptions {
 /// The outcome of the Socket.IO namespace handshake.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SocketNamespaceOutcome {
+    /// The namespace accepted the connection and assigned the optional SID.
     Ready { sid: Option<String> },
+    /// The namespace rejected the connection with its structured payload.
     Rejected { payload: Value },
+    /// The connection closed before the namespace accepted or rejected it.
     Closed,
 }
 
