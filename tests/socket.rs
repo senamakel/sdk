@@ -72,7 +72,18 @@ async fn socket_fixture(
             ))
             .await
             .unwrap();
-        let connect = socket.next().await.unwrap().unwrap().into_text().unwrap();
+        let connect = loop {
+            let message = timeout(Duration::from_secs(2), socket.next())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            if let Ok(text) = message.into_text() {
+                if text.starts_with("40") {
+                    break text;
+                }
+            }
+        };
         socket
             .send(Message::Text(namespace_reply.into()))
             .await
@@ -162,8 +173,13 @@ async fn managed_socket_namespace_silence_is_bounded_by_one_attempt_deadline() {
             ))
             .await
             .unwrap();
-        let _ = socket.next().await;
-        let _ = timeout(Duration::from_secs(2), socket.next()).await;
+        loop {
+            match timeout(Duration::from_secs(2), socket.next()).await {
+                Ok(Some(Ok(message))) if message.is_close() => break,
+                Ok(Some(Ok(_))) => continue,
+                _ => break,
+            }
+        }
         let _ = closed_tx.send(());
     });
     let started = Instant::now();
