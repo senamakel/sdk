@@ -47,6 +47,7 @@ async fn socket_connection_requires_a_bearer_token() {
     assert!(matches!(error, Error::MissingSocketToken));
 }
 
+#[allow(clippy::result_large_err)]
 async fn socket_fixture(
     namespace_reply: &'static str,
 ) -> (String, tokio::task::JoinHandle<String>) {
@@ -105,7 +106,7 @@ async fn socket_fixture(
 #[tokio::test]
 async fn managed_socket_connects_to_the_explicit_endpoint_and_exposes_namespace_sid() {
     let (endpoint, server) = socket_fixture(r#"40{"sid":"namespace-1"}"#).await;
-    let mut socket = TinyHumansClient::new("http://ignored.invalid")
+    let socket = TinyHumansClient::new("http://ignored.invalid")
         .with_token(Some("secret".into()))
         .connect_socket_with_options(
             tinyhumans_sdk::socket::SocketConnectOptions::new()
@@ -281,7 +282,7 @@ async fn managed_socket_default_endpoint_uses_the_socket_io_path() {
     let (endpoint, server) = socket_fixture(r#"40{"sid":"namespace-default"}"#).await;
     let url = url::Url::parse(&endpoint).unwrap();
     let base_url = format!("http://{}:{}", url.host_str().unwrap(), url.port().unwrap());
-    let mut socket = TinyHumansClient::new(base_url)
+    let socket = TinyHumansClient::new(base_url)
         .with_token(Some("secret".into()))
         .connect_socket_with_options(tinyhumans_sdk::socket::SocketConnectOptions::new())
         .await
@@ -299,6 +300,7 @@ async fn managed_socket_default_endpoint_uses_the_socket_io_path() {
 }
 
 #[tokio::test]
+#[allow(clippy::result_large_err)]
 async fn managed_socket_records_relative_upgrade_redirect_metadata() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -362,7 +364,7 @@ async fn managed_socket_records_relative_upgrade_redirect_metadata() {
         requests
     });
 
-    let mut socket = TinyHumansClient::new("http://ignored.invalid")
+    let socket = TinyHumansClient::new("http://ignored.invalid")
         .with_token(Some("secret".into()))
         .connect_socket_with_options(
             tinyhumans_sdk::socket::SocketConnectOptions::new()
@@ -391,6 +393,7 @@ async fn managed_socket_records_relative_upgrade_redirect_metadata() {
 }
 
 #[tokio::test]
+#[allow(clippy::result_large_err)]
 async fn managed_socket_enforces_three_redirects_on_websocket_upgrade() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -476,7 +479,7 @@ async fn managed_socket_keeps_one_attempt_after_peer_close() {
             .is_ok()
     });
 
-    let mut socket = TinyHumansClient::new("http://ignored.invalid")
+    let socket = TinyHumansClient::new("http://ignored.invalid")
         .with_token(Some("secret".into()))
         .connect_socket_with_options(
             tinyhumans_sdk::socket::SocketConnectOptions::new()
@@ -526,7 +529,7 @@ async fn managed_socket_close_is_bounded_while_peer_stalls() {
         let _ = release_rx.await;
         let _ = socket.next().await;
     });
-    let mut socket = TinyHumansClient::new("http://ignored.invalid")
+    let socket = TinyHumansClient::new("http://ignored.invalid")
         .with_token(Some("secret".into()))
         .connect_socket_with_options(
             tinyhumans_sdk::socket::SocketConnectOptions::new()
