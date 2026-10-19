@@ -21,6 +21,7 @@ use serde::Serialize;
 use serde_json::Value;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::timeout;
+use url::Url;
 
 use crate::Error;
 
@@ -199,6 +200,7 @@ impl SocketConnection {
             .endpoint
             .clone()
             .unwrap_or_else(|| format!("{}/socket.io/", base_url.trim_end_matches('/')));
+        validate_credential_endpoint(&endpoint)?;
         let (sender, events) = mpsc::unbounded_channel();
         let builder = socket_builder(endpoint, token, sender)
             .transport_type(TransportType::Websocket)
@@ -315,6 +317,26 @@ impl SocketConnection {
         }
         Ok(())
     }
+}
+
+fn validate_credential_endpoint(endpoint: &str) -> Result<(), Error> {
+    let url = Url::parse(endpoint)?;
+    if !matches!(url.scheme(), "ws" | "wss") {
+        return Err(Error::InsecureSocketEndpoint);
+    }
+    if url.scheme() == "ws" && is_remote_host(url.host_str()) {
+        return Err(Error::InsecureSocketEndpoint);
+    }
+    Ok(())
+}
+
+fn is_remote_host(host: Option<&str>) -> bool {
+    !host.is_some_and(|host| {
+        host.eq_ignore_ascii_case("localhost")
+            || host
+                .parse::<std::net::IpAddr>()
+                .is_ok_and(|ip| ip.is_loopback())
+    })
 }
 
 fn socket_builder(

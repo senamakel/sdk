@@ -75,6 +75,9 @@ pub enum Error {
     #[cfg(feature = "socket")]
     #[error("socket close timed out")]
     SocketCloseTimeout,
+    #[cfg(feature = "socket")]
+    #[error("credential-bearing socket connections require TLS for remote endpoints")]
+    InsecureSocketEndpoint,
     #[error("route is intentionally not exposed by the SDK: {0} {1}")]
     RouteNotExposed(String, String),
     /// A caller tried to narrow a scope that `POST /api-keys` does not accept

@@ -202,6 +202,151 @@ async fn managed_socket_namespace_silence_is_bounded_by_one_attempt_deadline() {
     server.abort();
 }
 
+#[tokio::test]
+async fn managed_socket_rejects_remote_plaintext_before_sending_auth() {
+    let error = TinyHumansClient::new("https://api.example.test")
+        .with_token(Some("secret".into()))
+        .connect_socket_with_options(
+            tinyhumans_sdk::socket::SocketConnectOptions::new()
+                .endpoint("ws://socket.example.test/socket.io/?EIO=4&transport=websocket"),
+        )
+        .await
+        .unwrap_err();
+
+    assert!(matches!(error, Error::InsecureSocketEndpoint));
+}
+
+#[tokio::test]
+async fn managed_socket_keeps_one_attempt_after_peer_close() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let endpoint = format!("ws://{address}/socket.io/?EIO=4&transport=websocket");
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+        socket
+            .send(Message::Text(
+                r#"0{"sid":"engine-3","upgrades":[],"pingInterval":25000,"pingTimeout":20000}"#
+                    .into(),
+            ))
+            .await
+            .unwrap();
+        loop {
+            let message = socket.next().await.unwrap().unwrap();
+            if message.to_text().is_ok_and(|text| text.starts_with("40")) {
+                break;
+            }
+        }
+        socket
+            .send(Message::Text(r#"40{"sid":"namespace-3"}"#.into()))
+            .await
+            .unwrap();
+        socket.close(None).await.unwrap();
+        timeout(Duration::from_millis(1300), listener.accept())
+            .await
+            .is_ok()
+    });
+
+    let mut socket = TinyHumansClient::new("http://ignored.invalid")
+        .with_token(Some("secret".into()))
+        .connect_socket_with_options(
+            tinyhumans_sdk::socket::SocketConnectOptions::new()
+                .endpoint(endpoint)
+                .connect_timeout(Duration::from_secs(2))
+                .single_attempt(true),
+        )
+        .await
+        .unwrap();
+    let stale_reconnect = timeout(Duration::from_secs(2), server)
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert!(
+        !stale_reconnect,
+        "single-attempt socket reconnected after close"
+    );
+    socket.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn managed_socket_delivers_events_and_ack_payloads() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let endpoint = format!("ws://{address}/socket.io/?EIO=4&transport=websocket");
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+        socket
+            .send(Message::Text(
+                r#"0{"sid":"engine-4","upgrades":[],"pingInterval":25000,"pingTimeout":20000}"#
+                    .into(),
+            ))
+            .await
+            .unwrap();
+        loop {
+            let message = socket.next().await.unwrap().unwrap();
+            if message.to_text().is_ok_and(|text| text.starts_with("40")) {
+                break;
+            }
+        }
+        socket
+            .send(Message::Text(r#"40{"sid":"namespace-4"}"#.into()))
+            .await
+            .unwrap();
+        socket
+            .send(Message::Text(r#"42["server:event",{"ok":true}]"#.into()))
+            .await
+            .unwrap();
+        loop {
+            let message = socket.next().await.unwrap().unwrap();
+            let Ok(text) = message.to_text() else {
+                continue;
+            };
+            if let Some(packet) = text.strip_prefix("42") {
+                let ack_id: String = packet.chars().take_while(char::is_ascii_digit).collect();
+                if !ack_id.is_empty() {
+                    socket
+                        .send(Message::Text(format!("43{ack_id}[\"ack-ok\"]")))
+                        .await
+                        .unwrap();
+                    break;
+                }
+            }
+        }
+    });
+    let mut socket = TinyHumansClient::new("http://ignored.invalid")
+        .with_token(Some("secret".into()))
+        .connect_socket_with_options(
+            tinyhumans_sdk::socket::SocketConnectOptions::new()
+                .endpoint(endpoint)
+                .connect_timeout(Duration::from_secs(2)),
+        )
+        .await
+        .unwrap();
+
+    let event = timeout(Duration::from_secs(1), socket.next_event())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(event.name, "server:event");
+    assert_eq!(
+        event.payload,
+        SocketPayload::Json(vec![serde_json::json!({"ok": true})])
+    );
+    let ack: String = socket
+        .emit_with_ack(
+            "client:event",
+            &serde_json::json!({"ping": true}),
+            Duration::from_secs(1),
+        )
+        .await
+        .unwrap();
+    assert_eq!(ack, "ack-ok");
+    socket.close().await.unwrap();
+    server.await.unwrap();
+}
+
 #[test]
 fn unknown_socket_events_remain_available_to_generic_consumers() {
     let event = SocketEvent::new("bot:joined", SocketPayload::Json(vec![json!({"ok": true})]));
