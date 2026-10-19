@@ -305,6 +305,13 @@ async fn managed_socket_delivers_events_and_ack_payloads() {
             .await
             .unwrap();
         socket.send(Message::Binary(vec![7, 8, 9])).await.unwrap();
+        socket
+            .send(Message::Text(
+                r#"451-["server:binary",{"_placeholder":true,"num":0}]"#.into(),
+            ))
+            .await
+            .unwrap();
+        socket.send(Message::Binary(vec![7, 8, 9])).await.unwrap();
         loop {
             let message = socket.next().await.unwrap().unwrap();
             let Ok(text) = message.to_text() else {
@@ -317,7 +324,7 @@ async fn managed_socket_delivers_events_and_ack_payloads() {
                     .collect();
                 if !ack_id.is_empty() {
                     socket
-                        .send(Message::Text(format!("43{ack_id}[\"ack-ok\"]")))
+                        .send(Message::Text(format!("43{ack_id}\"ack-ok\"")))
                         .await
                         .unwrap();
                     break;
@@ -350,6 +357,17 @@ async fn managed_socket_delivers_events_and_ack_payloads() {
         event.payload,
         SocketPayload::Json(vec![serde_json::json!({"ok": true})])
     );
+    let binary_event = timeout(Duration::from_secs(1), async {
+        loop {
+            let event = socket.next_event().await.unwrap();
+            if event.name == "server:binary" {
+                break event;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(binary_event.payload, SocketPayload::Binary(vec![7, 8, 9]));
     let binary_event = timeout(Duration::from_secs(1), async {
         loop {
             let event = socket.next_event().await.unwrap();
