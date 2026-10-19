@@ -25,9 +25,10 @@ percent-encoding = "2"
 # what earns these two their place in an otherwise dependency-light crate.
 futures = "0.3"
 # Socket.IO is a distinct framed protocol over Engine.IO, not a raw WebSocket.
-rust_socketio = { version = "0.6", features = ["async"], optional = true }
+rust_socketio = { git = "https://github.com/senamakel/rust-socketio", rev = "b975228a71c2de9f141220cd725c3c6d63425a01", features = ["async"], optional = true }
 tokio = { version = "1", features = ["sync", "time"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "net", "io-util"] }
 wiremock = "0.6"
+tokio-tungstenite = "0.21"
