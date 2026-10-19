@@ -6,6 +6,7 @@ use serde_json::json;
 use std::time::Duration;
 use tinyhumans_sdk::socket::{SocketEvent, SocketPayload};
 use tinyhumans_sdk::{Error, TinyHumansClient};
+use tokio::io::AsyncReadExt;
 use tokio::net::TcpListener;
 use tokio::time::{timeout, Instant};
 use tokio_tungstenite::{
@@ -203,6 +204,48 @@ async fn managed_socket_namespace_silence_is_bounded_by_one_attempt_deadline() {
         .unwrap()
         .unwrap();
     server.abort();
+}
+
+#[tokio::test]
+async fn managed_socket_bounds_silent_websocket_upgrade_and_closes_canceled_connect() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let endpoint = format!("ws://{address}/socket.io/?EIO=4&transport=websocket");
+    let (closed_tx, closed_rx) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut request = Vec::new();
+        let mut byte = [0; 1];
+        while !request.ends_with(b"\r\n\r\n") {
+            if stream.read(&mut byte).await.unwrap() == 0 {
+                return;
+            }
+            request.push(byte[0]);
+        }
+        let mut trailing = [0; 1];
+        while stream.read(&mut trailing).await.unwrap() != 0 {}
+        let _ = closed_tx.send(String::from_utf8_lossy(&request).to_string());
+    });
+
+    let started = Instant::now();
+    let error = TinyHumansClient::new("http://ignored.invalid")
+        .with_token(Some("secret".into()))
+        .connect_socket_with_options(
+            tinyhumans_sdk::socket::SocketConnectOptions::new()
+                .endpoint(endpoint)
+                .connect_timeout(Duration::from_millis(100)),
+        )
+        .await
+        .unwrap_err();
+
+    assert!(matches!(error, Error::SocketConnectTimeout));
+    assert!(started.elapsed() < Duration::from_secs(1));
+    let request = timeout(Duration::from_secs(1), closed_rx)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(request.starts_with("GET /socket.io/?EIO=4&transport=websocket "));
+    server.await.unwrap();
 }
 
 #[tokio::test]
@@ -417,6 +460,55 @@ async fn managed_socket_keeps_one_attempt_after_peer_close() {
         "single-attempt socket reconnected after close"
     );
     socket.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn managed_socket_close_is_bounded_while_peer_stalls() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let endpoint = format!("ws://{address}/socket.io/?EIO=4&transport=websocket");
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+        socket
+            .send(Message::Text(
+                r#"0{"sid":"engine-stalled","upgrades":[],"pingInterval":25000,"pingTimeout":20000}"#.into(),
+            ))
+            .await
+            .unwrap();
+        loop {
+            let message = socket.next().await.unwrap().unwrap();
+            if message.to_text().is_ok_and(|text| text.starts_with("40")) {
+                break;
+            }
+        }
+        socket
+            .send(Message::Text(r#"40{"sid":"namespace-stalled"}"#.into()))
+            .await
+            .unwrap();
+        let _ = release_rx.await;
+        let _ = socket.next().await;
+    });
+    let mut socket = TinyHumansClient::new("http://ignored.invalid")
+        .with_token(Some("secret".into()))
+        .connect_socket_with_options(
+            tinyhumans_sdk::socket::SocketConnectOptions::new()
+                .endpoint(endpoint)
+                .connect_timeout(Duration::from_secs(2))
+                .close_timeout(Duration::from_millis(100)),
+        )
+        .await
+        .unwrap();
+
+    let started = Instant::now();
+    let close_result = socket.close().await;
+    assert!(started.elapsed() < Duration::from_secs(1));
+    let _ = release_tx.send(());
+    if close_result.is_err() {
+        socket.close().await.unwrap();
+    }
+    server.await.unwrap();
 }
 
 #[tokio::test]
