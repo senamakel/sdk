@@ -303,9 +303,7 @@ impl SocketConnection {
             }
             Ok(())
         } else {
-            timeout(self.close_timeout, self.client.disconnect())
-                .await
-                .map_err(|_| Error::SocketCloseTimeout)??;
+            self.client.disconnect().await?;
             Ok(())
         }
     }
@@ -324,7 +322,14 @@ impl SocketConnection {
     /// configured bound. On timeout the handle remains owned and this method
     /// can be retried.
     pub async fn close(&self) -> Result<(), Error> {
-        self.disconnect().await
+        if self.managed.is_some() {
+            self.disconnect().await
+        } else {
+            timeout(self.close_timeout, self.client.disconnect())
+                .await
+                .map_err(|_| Error::SocketCloseTimeout)??;
+            Ok(())
+        }
     }
 }
 
