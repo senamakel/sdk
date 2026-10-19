@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, epic/8089-test-ownership]
   pull_request:
-    branches: [main]
+    branches: [main, epic/8089-test-ownership]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
