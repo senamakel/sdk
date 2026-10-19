@@ -423,3 +423,7 @@ fn socket_builder(
             .boxed()
         })
 }
+
+#[cfg(test)]
+#[path = "socket_tests.rs"]
+mod tests;
