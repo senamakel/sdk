@@ -2,7 +2,7 @@ use super::*;
 use futures::{SinkExt, StreamExt};
 use tokio::net::TcpListener;
 use tokio::time::timeout;
-use tokio_tungstenite::{tungstenite::Message, accept_async};
+use tokio_tungstenite::{accept_async, tungstenite::Message};
 
 #[tokio::test]
 async fn concurrent_close_deadline_includes_waiting_for_shutdown_lock() {
@@ -14,7 +14,8 @@ async fn concurrent_close_deadline_includes_waiting_for_shutdown_lock() {
         let mut socket = accept_async(stream).await.unwrap();
         socket
             .send(Message::Text(
-                r#"0{"sid":"engine-lock","upgrades":[],"pingInterval":25000,"pingTimeout":20000}"#.into(),
+                r#"0{"sid":"engine-lock","upgrades":[],"pingInterval":25000,"pingTimeout":20000}"#
+                    .into(),
             ))
             .await
             .unwrap();
@@ -57,9 +58,6 @@ async fn concurrent_close_deadline_includes_waiting_for_shutdown_lock() {
     if bounded.is_err() {
         let _ = close.await;
     }
-    assert!(matches!(
-        bounded,
-        Ok(Ok(Err(Error::SocketCloseTimeout)))
-    ));
+    assert!(matches!(bounded, Ok(Ok(Err(Error::SocketCloseTimeout)))));
     server.await.unwrap();
 }

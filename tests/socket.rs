@@ -146,7 +146,8 @@ async fn managed_socket_allows_ipv6_loopback_plaintext_fixture() {
         let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
         socket
             .send(Message::Text(
-                r#"0{"sid":"engine-ipv6","upgrades":[],"pingInterval":25000,"pingTimeout":20000}"#.into(),
+                r#"0{"sid":"engine-ipv6","upgrades":[],"pingInterval":25000,"pingTimeout":20000}"#
+                    .into(),
             ))
             .await
             .unwrap();
@@ -359,7 +360,10 @@ async fn dropping_namespace_connect_cancels_owned_tasks_before_rebind() {
         .await
         .unwrap()
         .unwrap();
-    assert!(old_auth.contains("old-token"), "unexpected auth packet: {old_auth}");
+    assert!(
+        old_auth.contains("old-token"),
+        "unexpected auth packet: {old_auth}"
+    );
     old_connect.abort();
     assert!(old_connect.await.unwrap_err().is_cancelled());
 
@@ -386,8 +390,14 @@ async fn dropping_namespace_connect_cancels_owned_tasks_before_rebind() {
     let _ = release_old_tx.send(());
     let (old_connect, old_peer_closed, late_old_activity) = old_peer.await.unwrap();
     assert!(old_connect.contains("old-token"));
-    assert!(old_peer_closed, "canceling the connect future left the old peer open");
-    assert!(!late_old_activity, "the canceled connection reconnected after rebind");
+    assert!(
+        old_peer_closed,
+        "canceling the connect future left the old peer open"
+    );
+    assert!(
+        !late_old_activity,
+        "the canceled connection reconnected after rebind"
+    );
 }
 
 #[tokio::test]

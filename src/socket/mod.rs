@@ -302,8 +302,8 @@ impl SocketConnection {
                 }
                 Ok::<(), Error>(())
             })
-                .await
-                .map_err(|_| Error::SocketCloseTimeout)?
+            .await
+            .map_err(|_| Error::SocketCloseTimeout)?
         } else {
             self.client.disconnect().await?;
             Ok(())
