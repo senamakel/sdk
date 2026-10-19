@@ -161,7 +161,7 @@ impl SocketEvent {
 /// A connected, authenticated Socket.IO client plus its incoming event queue.
 pub struct SocketConnection {
     client: Client,
-    managed: Option<ManagedClient>,
+    managed: Option<tokio::sync::Mutex<ManagedClient>>,
     events: mpsc::UnboundedReceiver<SocketEvent>,
     namespace_outcome: Option<SocketNamespaceOutcome>,
     connection_metadata: Option<ConnectionMetadata>,
@@ -214,7 +214,7 @@ impl SocketConnection {
             let client = (*managed).clone();
             Ok(Self {
                 client,
-                managed: Some(managed),
+                managed: Some(tokio::sync::Mutex::new(managed)),
                 events,
                 namespace_outcome: Some(namespace_outcome),
                 connection_metadata: Some(connection_metadata),
@@ -288,8 +288,21 @@ impl SocketConnection {
 
     /// Close the connection intentionally.
     pub async fn disconnect(&self) -> Result<(), Error> {
-        self.client.disconnect().await?;
-        Ok(())
+        if let Some(managed) = self.managed.as_ref() {
+            let mut managed = managed.lock().await;
+            let result = timeout(self.close_timeout, managed.shutdown())
+                .await
+                .map_err(|_| Error::SocketCloseTimeout)?;
+            if result.is_err() && !managed.is_shutdown() {
+                result?;
+            }
+            Ok(())
+        } else {
+            timeout(self.close_timeout, self.client.disconnect())
+                .await
+                .map_err(|_| Error::SocketCloseTimeout)??;
+            Ok(())
+        }
     }
 
     /// The namespace server's acceptance or rejection of this connection.
@@ -305,20 +318,8 @@ impl SocketConnection {
     /// Close the managed connection and join its owned tasks within the
     /// configured bound. On timeout the handle remains owned and this method
     /// can be retried.
-    pub async fn close(&mut self) -> Result<(), Error> {
-        if let Some(managed) = self.managed.as_mut() {
-            let result = timeout(self.close_timeout, managed.shutdown())
-                .await
-                .map_err(|_| Error::SocketCloseTimeout)?;
-            if result.is_err() && !managed.is_shutdown() {
-                result?;
-            }
-        } else {
-            timeout(self.close_timeout, self.client.disconnect())
-                .await
-                .map_err(|_| Error::SocketCloseTimeout)??;
-        }
-        Ok(())
+    pub async fn close(&self) -> Result<(), Error> {
+        self.disconnect().await
     }
 }
 
