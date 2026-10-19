@@ -123,12 +123,12 @@ async fn managed_socket_connects_to_the_explicit_endpoint_and_exposes_namespace_
         metadata.original_endpoint.query(),
         Some("EIO=4&transport=websocket")
     );
+    socket.close().await.unwrap();
     let recorded = server.await.unwrap();
     assert!(
         recorded.starts_with("/socket.io/?EIO=4&transport=websocket|40"),
         "unexpected request and namespace packet: {recorded:?}"
     );
-    socket.close().await.unwrap();
 }
 
 #[tokio::test]
