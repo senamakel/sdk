@@ -249,6 +249,10 @@ async fn managed_socket_records_relative_upgrade_redirect_metadata() {
             )
             .await;
             requests.push(request_rx.await.unwrap());
+            if hop == 0 {
+                drop(response);
+                continue;
+            }
             if let Ok(mut socket) = response {
                 socket
                     .send(Message::Text(
