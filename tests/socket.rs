@@ -77,7 +77,11 @@ async fn socket_fixture(
             .send(Message::Text(namespace_reply.into()))
             .await
             .unwrap();
-        let _ = timeout(Duration::from_secs(2), socket.next()).await;
+        while let Ok(Some(Ok(message))) = timeout(Duration::from_secs(2), socket.next()).await {
+            if message.is_close() {
+                break;
+            }
+        }
         request_uri_rx.await.unwrap() + "|" + &connect
     });
     (endpoint, task)
@@ -109,7 +113,10 @@ async fn managed_socket_connects_to_the_explicit_endpoint_and_exposes_namespace_
         Some("EIO=4&transport=websocket")
     );
     let recorded = server.await.unwrap();
-    assert!(recorded.starts_with("/socket.io/?EIO=4&transport=websocket|40"));
+    assert!(
+        recorded.starts_with("/socket.io/?EIO=4&transport=websocket|40"),
+        "unexpected request and namespace packet: {recorded:?}"
+    );
     socket.close().await.unwrap();
 }
 
