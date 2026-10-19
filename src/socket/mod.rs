@@ -294,14 +294,16 @@ impl SocketConnection {
     /// Close the connection intentionally.
     pub async fn disconnect(&self) -> Result<(), Error> {
         if let Some(managed) = self.managed.as_ref() {
-            let mut managed = managed.lock().await;
-            let result = timeout(self.close_timeout, managed.shutdown())
+            timeout(self.close_timeout, async {
+                let mut managed = managed.lock().await;
+                let result = managed.shutdown().await;
+                if result.is_err() && !managed.is_shutdown() {
+                    result?;
+                }
+                Ok::<(), Error>(())
+            })
                 .await
-                .map_err(|_| Error::SocketCloseTimeout)?;
-            if result.is_err() && !managed.is_shutdown() {
-                result?;
-            }
-            Ok(())
+                .map_err(|_| Error::SocketCloseTimeout)?
         } else {
             self.client.disconnect().await?;
             Ok(())
