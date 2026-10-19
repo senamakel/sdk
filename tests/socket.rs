@@ -233,7 +233,7 @@ async fn managed_socket_records_relative_upgrade_redirect_metadata() {
             let response = accept_hdr_async(
                 stream,
                 move |request: &tokio_tungstenite::tungstenite::handshake::server::Request,
-                      mut response| {
+                      mut response: tokio_tungstenite::tungstenite::handshake::server::Response| {
                     if let Some(sender) = request_tx.take() {
                         let _ = sender.send(request.uri().to_string());
                     }
@@ -321,7 +321,7 @@ async fn managed_socket_enforces_three_redirects_on_websocket_upgrade() {
             let _ = accept_hdr_async(
                 stream,
                 move |request: &tokio_tungstenite::tungstenite::handshake::server::Request,
-                      mut response| {
+                      mut response: tokio_tungstenite::tungstenite::handshake::server::Response| {
                     if let Some(sender) = request_tx.take() {
                         let _ = sender.send(request.uri().to_string());
                     }
