@@ -8,7 +8,10 @@ use tinyhumans_sdk::socket::{SocketEvent, SocketPayload};
 use tinyhumans_sdk::{Error, TinyHumansClient};
 use tokio::net::TcpListener;
 use tokio::time::{timeout, Instant};
-use tokio_tungstenite::{accept_hdr_async, tungstenite::Message};
+use tokio_tungstenite::{
+    accept_hdr_async,
+    tungstenite::{http::header::LOCATION, http::StatusCode, Message},
+};
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -214,6 +217,149 @@ async fn managed_socket_rejects_remote_plaintext_before_sending_auth() {
         .unwrap_err();
 
     assert!(matches!(error, Error::InsecureSocketEndpoint));
+}
+
+#[tokio::test]
+async fn managed_socket_records_relative_upgrade_redirect_metadata() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let endpoint = format!("ws://{address}/socket.io/?EIO=4&transport=websocket");
+    let server = tokio::spawn(async move {
+        let mut requests = Vec::new();
+        for hop in 0..2 {
+            let (stream, _) = listener.accept().await.unwrap();
+            let (request_tx, request_rx) = tokio::sync::oneshot::channel();
+            let mut request_tx = Some(request_tx);
+            let response = accept_hdr_async(
+                stream,
+                move |request: &tokio_tungstenite::tungstenite::handshake::server::Request,
+                      mut response| {
+                    if let Some(sender) = request_tx.take() {
+                        let _ = sender.send(request.uri().to_string());
+                    }
+                    if hop == 0 {
+                        *response.status_mut() = StatusCode::FOUND;
+                        response.headers_mut().insert(
+                            LOCATION,
+                            "?EIO=4&transport=websocket&step=final".parse().unwrap(),
+                        );
+                    }
+                    Ok(response)
+                },
+            )
+            .await;
+            requests.push(request_rx.await.unwrap());
+            if let Ok(mut socket) = response {
+                socket
+                    .send(Message::Text(
+                        r#"0{"sid":"engine-redirect","upgrades":[],"pingInterval":25000,"pingTimeout":20000}"#.into(),
+                    ))
+                    .await
+                    .unwrap();
+                loop {
+                    let message = socket.next().await.unwrap().unwrap();
+                    if message.to_text().is_ok_and(|text| text.starts_with("40")) {
+                        break;
+                    }
+                }
+                socket
+                    .send(Message::Text(r#"40{"sid":"namespace-redirect"}"#.into()))
+                    .await
+                    .unwrap();
+                while let Ok(Some(Ok(message))) =
+                    timeout(Duration::from_secs(2), socket.next()).await
+                {
+                    if message.is_close() {
+                        break;
+                    }
+                }
+                break;
+            }
+        }
+        requests
+    });
+
+    let mut socket = TinyHumansClient::new("http://ignored.invalid")
+        .with_token(Some("secret".into()))
+        .connect_socket_with_options(
+            tinyhumans_sdk::socket::SocketConnectOptions::new()
+                .endpoint(endpoint)
+                .connect_timeout(Duration::from_secs(2)),
+        )
+        .await
+        .unwrap();
+    let metadata = socket.connection_metadata().unwrap();
+    assert_eq!(metadata.redirects.len(), 1);
+    assert_eq!(metadata.redirects[0].status, 302);
+    assert_eq!(
+        metadata.redirects[0].to.query(),
+        Some("EIO=4&transport=websocket&step=final")
+    );
+    assert!(metadata
+        .final_endpoint
+        .query()
+        .unwrap()
+        .contains("step=final"));
+    socket.close().await.unwrap();
+    let requests = server.await.unwrap();
+    assert_eq!(requests.len(), 2);
+    assert!(requests[0].starts_with("/socket.io/?EIO=4&transport=websocket"));
+    assert!(requests[1].contains("step=final"));
+}
+
+#[tokio::test]
+async fn managed_socket_enforces_three_redirects_on_websocket_upgrade() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let endpoint = format!("ws://{address}/socket.io/?EIO=4&transport=websocket");
+    let server = tokio::spawn(async move {
+        let mut requests = Vec::new();
+        for hop in 0..4 {
+            let (stream, _) = listener.accept().await.unwrap();
+            let (request_tx, request_rx) = tokio::sync::oneshot::channel();
+            let mut request_tx = Some(request_tx);
+            let _ = accept_hdr_async(
+                stream,
+                move |request: &tokio_tungstenite::tungstenite::handshake::server::Request,
+                      mut response| {
+                    if let Some(sender) = request_tx.take() {
+                        let _ = sender.send(request.uri().to_string());
+                    }
+                    *response.status_mut() = StatusCode::FOUND;
+                    response.headers_mut().insert(
+                        LOCATION,
+                        format!("?EIO=4&transport=websocket&hop={}", hop + 1)
+                            .parse()
+                            .unwrap(),
+                    );
+                    Ok(response)
+                },
+            )
+            .await;
+            requests.push(request_rx.await.unwrap());
+        }
+        requests
+    });
+    let error = TinyHumansClient::new("http://ignored.invalid")
+        .with_token(Some("secret".into()))
+        .connect_socket_with_options(
+            tinyhumans_sdk::socket::SocketConnectOptions::new()
+                .endpoint(endpoint)
+                .connect_timeout(Duration::from_secs(2)),
+        )
+        .await
+        .unwrap_err();
+
+    assert!(matches!(error, Error::Socket(_)));
+    let requests = timeout(Duration::from_secs(2), server)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        requests.len(),
+        4,
+        "initial request plus three followed redirects"
+    );
 }
 
 #[tokio::test]
