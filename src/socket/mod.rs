@@ -21,7 +21,7 @@ use serde::Serialize;
 use serde_json::Value;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::timeout;
-use url::Url;
+use url::{Host, Url};
 
 use crate::Error;
 
@@ -338,7 +338,7 @@ fn validate_credential_endpoint(endpoint: &str) -> Result<(), Error> {
     if !matches!(url.scheme(), "ws" | "wss") {
         return Err(Error::UnsupportedSocketScheme(url.scheme().to_owned()));
     }
-    if url.scheme() == "ws" && is_remote_host(url.host_str()) {
+    if url.scheme() == "ws" && is_remote_host(&url) {
         return Err(Error::InsecureSocketEndpoint);
     }
     Ok(())
@@ -361,13 +361,13 @@ fn default_socket_endpoint(base_url: &str) -> Result<String, Error> {
     Ok(url.into())
 }
 
-fn is_remote_host(host: Option<&str>) -> bool {
-    !host.is_some_and(|host| {
-        host.eq_ignore_ascii_case("localhost")
-            || host
-                .parse::<std::net::IpAddr>()
-                .is_ok_and(|ip| ip.is_loopback())
-    })
+fn is_remote_host(url: &Url) -> bool {
+    match url.host() {
+        Some(Host::Domain(host)) => !host.eq_ignore_ascii_case("localhost"),
+        Some(Host::Ipv4(address)) => !address.is_loopback(),
+        Some(Host::Ipv6(address)) => !address.is_loopback(),
+        None => true,
+    }
 }
 
 fn socket_builder(
