@@ -307,9 +307,12 @@ impl SocketConnection {
     /// can be retried.
     pub async fn close(&mut self) -> Result<(), Error> {
         if let Some(managed) = self.managed.as_mut() {
-            timeout(self.close_timeout, managed.shutdown())
+            let result = timeout(self.close_timeout, managed.shutdown())
                 .await
-                .map_err(|_| Error::SocketCloseTimeout)??;
+                .map_err(|_| Error::SocketCloseTimeout)?;
+            if result.is_err() && !managed.is_shutdown() {
+                result?;
+            }
         } else {
             timeout(self.close_timeout, self.client.disconnect())
                 .await

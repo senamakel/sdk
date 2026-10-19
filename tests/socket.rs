@@ -241,7 +241,7 @@ async fn managed_socket_keeps_one_attempt_after_peer_close() {
             .send(Message::Text(r#"40{"sid":"namespace-3"}"#.into()))
             .await
             .unwrap();
-        socket.close(None).await.unwrap();
+        let _ = socket.close(None).await;
         timeout(Duration::from_millis(1300), listener.accept())
             .await
             .is_ok()
@@ -298,13 +298,23 @@ async fn managed_socket_delivers_events_and_ack_payloads() {
             .send(Message::Text(r#"42["server:event",{"ok":true}]"#.into()))
             .await
             .unwrap();
+        socket
+            .send(Message::Text(
+                r#"451-["server:binary",{"_placeholder":true,"num":0}]"#.into(),
+            ))
+            .await
+            .unwrap();
+        socket.send(Message::Binary(vec![7, 8, 9])).await.unwrap();
         loop {
             let message = socket.next().await.unwrap().unwrap();
             let Ok(text) = message.to_text() else {
                 continue;
             };
             if let Some(packet) = text.strip_prefix("42") {
-                let ack_id: String = packet.chars().take_while(char::is_ascii_digit).collect();
+                let ack_id: String = packet
+                    .chars()
+                    .take_while(|character| character.is_ascii_digit())
+                    .collect();
                 if !ack_id.is_empty() {
                     socket
                         .send(Message::Text(format!("43{ack_id}[\"ack-ok\"]")))
@@ -325,15 +335,32 @@ async fn managed_socket_delivers_events_and_ack_payloads() {
         .await
         .unwrap();
 
-    let event = timeout(Duration::from_secs(1), socket.next_event())
-        .await
-        .unwrap()
-        .unwrap();
+    let event = timeout(Duration::from_secs(1), async {
+        loop {
+            let event = socket.next_event().await.unwrap();
+            if event.name == "server:event" {
+                break event;
+            }
+        }
+    })
+    .await
+    .unwrap();
     assert_eq!(event.name, "server:event");
     assert_eq!(
         event.payload,
         SocketPayload::Json(vec![serde_json::json!({"ok": true})])
     );
+    let binary_event = timeout(Duration::from_secs(1), async {
+        loop {
+            let event = socket.next_event().await.unwrap();
+            if event.name == "server:binary" {
+                break event;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(binary_event.payload, SocketPayload::Binary(vec![7, 8, 9]));
     let ack: String = socket
         .emit_with_ack(
             "client:event",
