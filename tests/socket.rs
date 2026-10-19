@@ -263,6 +263,42 @@ async fn managed_socket_rejects_remote_plaintext_before_sending_auth() {
 }
 
 #[tokio::test]
+async fn managed_socket_rejects_unsupported_endpoint_schemes() {
+    let error = TinyHumansClient::new("https://api.example.test")
+        .with_token(Some("secret".into()))
+        .connect_socket_with_options(
+            tinyhumans_sdk::socket::SocketConnectOptions::new()
+                .endpoint("ftp://socket.example.test/socket.io/"),
+        )
+        .await
+        .unwrap_err();
+
+    assert!(matches!(error, Error::UnsupportedSocketScheme(scheme) if scheme == "ftp"));
+}
+
+#[tokio::test]
+async fn managed_socket_default_endpoint_uses_the_socket_io_path() {
+    let (endpoint, server) = socket_fixture(r#"40{"sid":"namespace-default"}"#).await;
+    let url = url::Url::parse(&endpoint).unwrap();
+    let base_url = format!("http://{}:{}", url.host_str().unwrap(), url.port().unwrap());
+    let mut socket = TinyHumansClient::new(base_url)
+        .with_token(Some("secret".into()))
+        .connect_socket_with_options(tinyhumans_sdk::socket::SocketConnectOptions::new())
+        .await
+        .unwrap();
+
+    assert!(matches!(
+        socket.namespace_outcome(),
+        Some(tinyhumans_sdk::socket::SocketNamespaceOutcome::Ready { .. })
+    ));
+    socket.close().await.unwrap();
+    assert!(server
+        .await
+        .unwrap()
+        .starts_with("/socket.io/?EIO=4&transport=websocket|40"));
+}
+
+#[tokio::test]
 async fn managed_socket_records_relative_upgrade_redirect_metadata() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();

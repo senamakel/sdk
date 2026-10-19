@@ -196,10 +196,10 @@ impl SocketConnection {
         token: String,
         options: SocketConnectOptions,
     ) -> Result<Self, Error> {
-        let endpoint = options
-            .endpoint
-            .clone()
-            .unwrap_or_else(|| format!("{}/socket.io/", base_url.trim_end_matches('/')));
+        let endpoint = match options.endpoint.clone() {
+            Some(endpoint) => endpoint,
+            None => default_socket_endpoint(&base_url)?,
+        };
         validate_credential_endpoint(&endpoint)?;
         let (sender, events) = mpsc::unbounded_channel();
         let builder = socket_builder(endpoint, token, sender)
@@ -325,12 +325,29 @@ impl SocketConnection {
 fn validate_credential_endpoint(endpoint: &str) -> Result<(), Error> {
     let url = Url::parse(endpoint)?;
     if !matches!(url.scheme(), "ws" | "wss") {
-        return Err(Error::InsecureSocketEndpoint);
+        return Err(Error::UnsupportedSocketScheme(url.scheme().to_owned()));
     }
     if url.scheme() == "ws" && is_remote_host(url.host_str()) {
         return Err(Error::InsecureSocketEndpoint);
     }
     Ok(())
+}
+
+fn default_socket_endpoint(base_url: &str) -> Result<String, Error> {
+    let mut url = Url::parse(base_url)?;
+    match url.scheme() {
+        "http" => url
+            .set_scheme("ws")
+            .expect("HTTP and WS URL schemes are compatible"),
+        "https" => url
+            .set_scheme("wss")
+            .expect("HTTPS and WSS URL schemes are compatible"),
+        "ws" | "wss" => {}
+        scheme => return Err(Error::UnsupportedSocketScheme(scheme.to_owned())),
+    }
+    url.set_path("/socket.io/");
+    url.set_query(Some("EIO=4&transport=websocket"));
+    Ok(url.into())
 }
 
 fn is_remote_host(host: Option<&str>) -> bool {

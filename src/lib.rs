@@ -78,6 +78,9 @@ pub enum Error {
     #[cfg(feature = "socket")]
     #[error("credential-bearing socket connections require TLS for remote endpoints")]
     InsecureSocketEndpoint,
+    #[cfg(feature = "socket")]
+    #[error("unsupported socket endpoint scheme: {0}")]
+    UnsupportedSocketScheme(String),
     #[error("route is intentionally not exposed by the SDK: {0} {1}")]
     RouteNotExposed(String, String),
     /// A caller tried to narrow a scope that `POST /api-keys` does not accept
