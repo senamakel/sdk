@@ -69,6 +69,12 @@ pub enum Error {
     #[cfg(feature = "socket")]
     #[error("socket acknowledgement channel closed")]
     SocketAckClosed,
+    #[cfg(feature = "socket")]
+    #[error("socket connection attempt timed out")]
+    SocketConnectTimeout,
+    #[cfg(feature = "socket")]
+    #[error("socket close timed out")]
+    SocketCloseTimeout,
     #[error("route is intentionally not exposed by the SDK: {0} {1}")]
     RouteNotExposed(String, String),
     /// A caller tried to narrow a scope that `POST /api-keys` does not accept
@@ -231,6 +237,18 @@ impl TinyHumansClient {
     pub async fn connect_socket(&self) -> Result<socket::SocketConnection, Error> {
         let token = self.http.token.clone().ok_or(Error::MissingSocketToken)?;
         socket::SocketConnection::connect(self.http.base_url.clone(), token).await
+    }
+
+    /// Connect to Socket.IO with an explicit endpoint, deadline, and reconnect
+    /// policy while retaining ownership of the transport task.
+    #[cfg(feature = "socket")]
+    pub async fn connect_socket_with_options(
+        &self,
+        options: socket::SocketConnectOptions,
+    ) -> Result<socket::SocketConnection, Error> {
+        let token = self.http.token.clone().ok_or(Error::MissingSocketToken)?;
+        socket::SocketConnection::connect_with_options(self.http.base_url.clone(), token, options)
+            .await
     }
 }
 

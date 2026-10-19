@@ -51,9 +51,15 @@ async fn socket_fixture(
     let endpoint = format!("ws://{address}/socket.io/?EIO=4&transport=websocket");
     let task = tokio::spawn(async move {
         let (stream, _) = listener.accept().await.unwrap();
-        let (mut socket, request) = accept_hdr_async(
+        let (request_uri_tx, request_uri_rx) = tokio::sync::oneshot::channel();
+        let mut request_uri_tx = Some(request_uri_tx);
+        let mut socket = accept_hdr_async(
             stream,
-            |request: &tokio_tungstenite::tungstenite::handshake::server::Request, response| {
+            move |request: &tokio_tungstenite::tungstenite::handshake::server::Request,
+                  response| {
+                if let Some(sender) = request_uri_tx.take() {
+                    let _ = sender.send(request.uri().to_string());
+                }
                 Ok(response)
             },
         )
@@ -72,7 +78,7 @@ async fn socket_fixture(
             .await
             .unwrap();
         let _ = timeout(Duration::from_secs(2), socket.next()).await;
-        request.uri().to_string() + "|" + &connect
+        request_uri_rx.await.unwrap() + "|" + &connect
     });
     (endpoint, task)
 }
