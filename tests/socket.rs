@@ -301,6 +301,96 @@ async fn managed_socket_bounds_silent_websocket_upgrade_and_closes_canceled_conn
 }
 
 #[tokio::test]
+async fn dropping_namespace_connect_cancels_owned_tasks_before_rebind() {
+    let old_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let old_address = old_listener.local_addr().unwrap();
+    let old_endpoint = format!("ws://{old_address}/socket.io/?EIO=4&transport=websocket");
+    let (namespace_connect_tx, namespace_connect_rx) = tokio::sync::oneshot::channel();
+    let (release_old_tx, release_old_rx) = tokio::sync::oneshot::channel();
+    let old_peer = tokio::spawn(async move {
+        let (stream, _) = old_listener.accept().await.unwrap();
+        let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+        socket
+            .send(Message::Text(
+                r#"0{"sid":"engine-cancel","upgrades":[],"pingInterval":25000,"pingTimeout":20000}"#.into(),
+            ))
+            .await
+            .unwrap();
+        let connect = loop {
+            let message = timeout(Duration::from_secs(2), socket.next())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            if let Ok(text) = message.into_text() {
+                if text.starts_with("40") {
+                    break text;
+                }
+            }
+        };
+        let _ = namespace_connect_tx.send(connect.clone());
+        let closed = loop {
+            match timeout(Duration::from_secs(2), socket.next()).await {
+                Ok(None) => break true,
+                Ok(Some(Ok(message))) if message.is_close() => break true,
+                Ok(Some(Ok(_))) => continue,
+                Ok(Some(Err(_))) => break true,
+                Err(_) => break false,
+            }
+        };
+        let _ = release_old_rx.await;
+        let late_activity = timeout(Duration::from_millis(300), old_listener.accept())
+            .await
+            .is_ok();
+        (connect, closed, late_activity)
+    });
+
+    let old_connect = tokio::spawn(async move {
+        TinyHumansClient::new("http://ignored.invalid")
+            .with_token(Some("old-token".into()))
+            .connect_socket_with_options(
+                tinyhumans_sdk::socket::SocketConnectOptions::new()
+                    .endpoint(old_endpoint)
+                    .connect_timeout(Duration::from_secs(10)),
+            )
+            .await
+    });
+    let old_auth = timeout(Duration::from_secs(2), namespace_connect_rx)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(old_auth.contains("old-token"), "unexpected auth packet: {old_auth}");
+    old_connect.abort();
+    assert!(old_connect.await.unwrap_err().is_cancelled());
+
+    let (new_endpoint, new_peer) = socket_fixture(r#"40{"sid":"namespace-rebound"}"#).await;
+    let rebound = TinyHumansClient::new("http://ignored.invalid")
+        .with_token(Some("new-token".into()))
+        .connect_socket_with_options(
+            tinyhumans_sdk::socket::SocketConnectOptions::new()
+                .endpoint(new_endpoint)
+                .connect_timeout(Duration::from_secs(2)),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        rebound.namespace_outcome(),
+        Some(&tinyhumans_sdk::socket::SocketNamespaceOutcome::Ready {
+            sid: Some("namespace-rebound".into())
+        })
+    );
+    rebound.close().await.unwrap();
+    let new_peer_data = new_peer.await.unwrap();
+    assert!(new_peer_data.contains("new-token"));
+
+    let _ = release_old_tx.send(());
+    let (old_connect, old_peer_closed, late_old_activity) = old_peer.await.unwrap();
+    assert!(old_connect.contains("old-token"));
+    assert!(old_peer_closed, "canceling the connect future left the old peer open");
+    assert!(!late_old_activity, "the canceled connection reconnected after rebind");
+}
+
+#[tokio::test]
 async fn managed_socket_rejects_remote_plaintext_before_sending_auth() {
     let error = TinyHumansClient::new("https://api.example.test")
         .with_token(Some("secret".into()))
