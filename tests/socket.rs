@@ -137,6 +137,57 @@ async fn managed_socket_connects_to_the_explicit_endpoint_and_exposes_namespace_
 }
 
 #[tokio::test]
+async fn managed_socket_allows_ipv6_loopback_plaintext_fixture() {
+    let listener = TcpListener::bind("[::1]:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let endpoint = format!("ws://{address}/socket.io/?EIO=4&transport=websocket");
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+        socket
+            .send(Message::Text(
+                r#"0{"sid":"engine-ipv6","upgrades":[],"pingInterval":25000,"pingTimeout":20000}"#.into(),
+            ))
+            .await
+            .unwrap();
+        loop {
+            let message = timeout(Duration::from_secs(2), socket.next())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            if message.to_text().is_ok_and(|text| text.starts_with("40")) {
+                break;
+            }
+        }
+        socket
+            .send(Message::Text(r#"40{"sid":"namespace-ipv6"}"#.into()))
+            .await
+            .unwrap();
+        let _ = timeout(Duration::from_secs(2), socket.next()).await;
+    });
+
+    let socket = TinyHumansClient::new("http://ignored.invalid")
+        .with_token(Some("secret".into()))
+        .connect_socket_with_options(
+            tinyhumans_sdk::socket::SocketConnectOptions::new()
+                .endpoint(endpoint)
+                .connect_timeout(Duration::from_secs(2)),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        socket.namespace_outcome(),
+        Some(&tinyhumans_sdk::socket::SocketNamespaceOutcome::Ready {
+            sid: Some("namespace-ipv6".into())
+        })
+    );
+    socket.close().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn managed_socket_preserves_structured_namespace_rejection() {
     let (endpoint, server) =
         socket_fixture(r#"44{"message":"denied","data":{"reason":"stale-token"}}"#).await;
