@@ -212,3 +212,42 @@ fn generated_public_webhook_routes_pass_the_structural_guard() {
         );
     }
 }
+
+#[test]
+fn a_suffix_separator_or_case_variant_does_not_unblock_a_route() {
+    // The gate must see the path the server routes, not the raw string: the
+    // URL parser drops `?`/`#` and reads `\` as `/`, the server decodes
+    // percent-escapes, and routing ignores case.
+    for (method, path) in [
+        (Method::GET, "/internal?x=1"),
+        (Method::GET, "/internal#frag"),
+        (Method::POST, "/admin/announcements?x=1"),
+        (Method::GET, "\\internal\\x"),
+        (Method::GET, "/a\\admin\\x"),
+        (Method::GET, "/Internal/x"),
+        (Method::POST, "/ADMIN/announcements"),
+        (Method::GET, "//internal/x"),
+        (Method::GET, "/x/../internal/y"),
+        (Method::GET, "/%69nternal/x"),
+        (Method::POST, "/%41dmin/announcements"),
+        (Method::GET, "/%2Finternal/x"),
+        (Method::GET, "/a%2fadmin%2Fx"),
+        (Method::GET, "/%FF/x"),
+    ] {
+        assert!(
+            matches!(
+                reject_unexposed_route(&method, path),
+                Err(Error::RouteNotExposed(_, _))
+            ),
+            "{} {path} was not blocked",
+            method.as_str()
+        );
+    }
+}
+
+#[test]
+fn an_escaped_slash_stays_inside_its_segment() {
+    // `wh%2F1` is one tunnel id; decoding must not split it into two segments
+    // and push a public route out of its template.
+    assert!(reject_unexposed_route(&Method::DELETE, "/webhooks/core/wh%2F1").is_ok());
+}

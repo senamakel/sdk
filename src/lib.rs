@@ -463,10 +463,8 @@ impl HttpClient {
         self.send_bytes_query(method, path, &[]).await
     }
 
-    /// [`Self::send_bytes`] with query parameters. Kept separate so the query
-    /// goes through [`Self::url`] rather than being appended to `path`, which
-    /// would defeat the unexposed-route check — that matches on path segments,
-    /// and a trailing `?...` would make the last segment miss its template.
+    /// [`Self::send_bytes`] with query parameters, which go through
+    /// [`Self::url`] rather than being appended to `path`.
     pub async fn send_bytes_query(
         &self,
         method: Method,
@@ -650,9 +648,14 @@ fn has_dot_segment(path: &str) -> bool {
 }
 
 fn reject_unexposed_route(method: &Method, path: &str) -> Result<(), Error> {
-    let blocked = route_matches(UNEXPOSED_ROUTES, method, path)
-        || is_structurally_unexposed(method, path)
-        || has_dot_segment(path);
+    let blocked = has_dot_segment(path)
+        || match parsed_path(path) {
+            Some(parsed) => {
+                route_matches(UNEXPOSED_ROUTES, method, &parsed)
+                    || is_structurally_unexposed(method, &parsed)
+            }
+            None => true,
+        };
     if blocked {
         Err(Error::RouteNotExposed(
             method.as_str().to_owned(),
@@ -661,6 +664,30 @@ fn reject_unexposed_route(method: &Method, path: &str) -> Result<(), Error> {
     } else {
         Ok(())
     }
+}
+
+/// The path the server will route, parsed the way [`HttpClient::url`] parses
+/// it (a `?`/`#` suffix is dropped and `\` reads as `/`), with each segment
+/// percent-decoded once and lower-cased. Gating the raw string instead lets
+/// `/internal?x`, `\internal`, `/%69nternal` or `/Internal` slip past. An
+/// escaped `/` stays inside its segment, as routing keeps it (`wh%2F1` is one
+/// id). `None` (refuse) when the path does not parse or a segment decodes to
+/// invalid UTF-8.
+fn parsed_path(path: &str) -> Option<String> {
+    let normalized = if path.starts_with('/') {
+        path.to_owned()
+    } else {
+        format!("/{path}")
+    };
+    let url = Url::parse(&format!("http://gate.invalid{normalized}")).ok()?;
+    url.path()
+        .split('/')
+        .map(|segment| {
+            let decoded = percent_decode_str(segment).decode_utf8().ok()?;
+            Some(decoded.replace('/', "%2f").to_ascii_lowercase())
+        })
+        .collect::<Option<Vec<_>>>()
+        .map(|segments| segments.join("/"))
 }
 
 fn route_matches(routes: &[(&str, &str)], method: &Method, path: &str) -> bool {
@@ -675,21 +702,30 @@ fn route_matches(routes: &[(&str, &str)], method: &Method, path: &str) -> bool {
                 .iter()
                 .zip(&request_segments)
                 .all(|(expected, actual)| {
-                    (expected.starts_with('{') && expected.ends_with('}')) || expected == actual
+                    (expected.starts_with('{') && expected.ends_with('}'))
+                        || expected.eq_ignore_ascii_case(actual)
                 })
     })
 }
 
 fn is_structurally_unexposed(method: &Method, path: &str) -> bool {
     let segments = path.trim_matches('/').split('/').collect::<Vec<_>>();
-    if segments.contains(&"admin") {
+    // For the deny names only, also split at an escaped `/` (kept as `%2f` by
+    // `parsed_path`): a proxy that decodes `%2F` routes `/a%2fadmin%2Fx` as
+    // `/a/admin/x`.
+    let pieces = segments
+        .iter()
+        .flat_map(|segment| segment.split("%2f"))
+        .filter(|piece| !piece.is_empty())
+        .collect::<Vec<_>>();
+    if pieces.contains(&"admin") {
         return true;
     }
 
     // Service-to-service routes live under `/internal` and are deliberately
     // absent from the published spec, so they cannot be listed by name here.
     // No SDK user holds the credentials they take; block the whole prefix.
-    if segments.first() == Some(&"internal") {
+    if pieces.first() == Some(&"internal") {
         return true;
     }
 
