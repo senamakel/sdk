@@ -72,6 +72,12 @@ const RETAINED_UNEXPOSED_ROUTES = [
   // user-facing API, not an admin operation or webhook receiver. A prior
   // pass wrongly added it alongside the /internal/memory callbacks above;
   // flagged by chatgpt-codex-connector on PR #39.
+  ["GET", "/admin/memory/model-usage"],
+  ["GET", "/admin/memory/overview"],
+  ["GET", "/admin/memory/storage"],
+  ["GET", "/admin/memory/tenants/{userId}"],
+  ["GET", "/admin/memory/top-tenants"],
+  ["POST", "/webhooks/elevenlabs"],
   ["POST", "/admin/announcements"],
   ["DELETE", "/admin/announcements/{announcementId}"],
   ["PATCH", "/admin/announcements/{announcementId}"],

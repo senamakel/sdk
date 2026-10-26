@@ -464,7 +464,7 @@ impl HttpClient {
     }
 
     /// [`Self::send_bytes`] with query parameters, which go through
-    /// [`Self::url`] rather than being appended to `path`.
+    /// `Self::url` rather than being appended to `path`.
     pub async fn send_bytes_query(
         &self,
         method: Method,
