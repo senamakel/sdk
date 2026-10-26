@@ -12,8 +12,8 @@
     "totalOperationCount": 244,
     "operationCount": 256,
     "supplementalOperationCount": 13,
-    "excludedAdminOperationCount": 47,
-    "excludedWebhookOperationCount": 12,
+    "excludedAdminOperationCount": 52,
+    "excludedWebhookOperationCount": 13,
     "servers": [
       "https://api.tinyhumans.ai/",
       "https://staging-api.tinyhumans.ai/",
