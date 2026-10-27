@@ -251,11 +251,19 @@ impl SocketConnection {
 fn validate_endpoint(endpoint: &str) -> Result<Url, Error> {
     let url = Url::parse(endpoint).map_err(|_| Error::UnsafeSocketEndpoint)?;
     let secure = matches!(url.scheme(), "https" | "wss");
+    let loopback_transport = matches!(url.scheme(), "http" | "ws");
     let loopback = url.host_str().is_some_and(|host| {
         host.eq_ignore_ascii_case("localhost")
-            || host.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback())
+            || host
+                .trim_start_matches('[')
+                .trim_end_matches(']')
+                .parse::<std::net::IpAddr>()
+                .is_ok_and(|ip| ip.is_loopback())
     });
-    if !(secure || loopback) || !url.username().is_empty() || url.password().is_some() {
+    if !(secure || (loopback_transport && loopback))
+        || !url.username().is_empty()
+        || url.password().is_some()
+    {
         return Err(Error::UnsafeSocketEndpoint);
     }
     Ok(url)
