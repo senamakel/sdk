@@ -380,13 +380,16 @@ async fn sleep_or_disconnect(
     pending: &mut VecDeque<Command>,
     shutdown: &mut watch::Receiver<bool>,
 ) -> bool {
-    tokio::select! {
-        _ = shutdown.changed() => true,
-        _ = sleep(duration) => false,
-        command = commands.recv() => match command {
-            Some(command) if pending.len() < EMIT_QUEUE_CAPACITY => { pending.push_back(command); false }
-            Some(command) => { fail_command(command); false }
-            None => true,
+    let deadline = Instant::now() + duration;
+    loop {
+        tokio::select! {
+            _ = shutdown.changed() => return true,
+            _ = sleep_until(deadline) => return false,
+            command = commands.recv() => match command {
+                Some(command) if pending.len() < EMIT_QUEUE_CAPACITY => pending.push_back(command),
+                Some(command) => fail_command(command),
+                None => return true,
+            }
         }
     }
 }
