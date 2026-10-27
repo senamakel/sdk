@@ -50,7 +50,7 @@ impl SocketPayload {
     }
 }
 
-/// One incoming Socket.IO event.
+/// Source of an incoming Socket.IO event.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SocketEventSource {
     /// An event received by name from the backend Socket.IO namespace.
