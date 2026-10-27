@@ -86,6 +86,10 @@ pub struct SocketConnection {
     events: mpsc::UnboundedReceiver<SocketEvent>,
 }
 
+#[cfg(test)]
+#[path = "mod_tests.rs"]
+mod tests;
+
 impl fmt::Debug for SocketConnection {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -218,3 +222,4 @@ impl SocketConnection {
         Ok(())
     }
 }
+
