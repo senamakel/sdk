@@ -93,132 +93,26 @@ impl fmt::Debug for SocketConnection {
 impl SocketConnection {
     pub(crate) async fn connect(
         base_url: String,
-        token_provider: Arc<dyn Fn() -> Option<String> + Send + Sync>,
+        token_provider: TokenProvider,
     ) -> Result<Self, Error> {
         validate_endpoint(&base_url)?;
         let token = next_token(token_provider.as_ref()).ok_or(Error::MissingSocketToken)?;
-        let (sender, events) = mpsc::unbounded_channel();
-
-        let any_sender = sender.clone();
-        let open_sender = sender.clone();
-        let close_sender = sender.clone();
-        let connect_sender = sender.clone();
-        let error_sender = sender;
+        let (commands, command_rx) = mpsc::channel(128);
+        let (event_tx, events) = mpsc::channel(256);
         let loop_active = Arc::new(AtomicBool::new(false));
         let stopped_on_failure = Arc::new(AtomicBool::new(false));
-        let reconnect_provider = Arc::clone(&token_provider);
-        let reconnect_stopped = Arc::clone(&stopped_on_failure);
-        let error_stopped = Arc::clone(&stopped_on_failure);
-        let error_active = Arc::clone(&loop_active);
-        let (ready_tx, ready_rx) = oneshot::channel();
-        let ready_tx = Arc::new(Mutex::new(Some(ready_tx)));
-        let ready_callback_tx = Arc::clone(&ready_tx);
-        let client = tokio::time::timeout(
-            Duration::from_secs(10),
-            ClientBuilder::new(base_url)
-                .auth(serde_json::json!({ "token": token }))
-                .opening_header("x-sdk-client", "tinyhumans-rust")
-                .on_any(move |event, payload, _| {
-                    let sender = any_sender.clone();
-                    async move {
-                        let _ = sender.send(SocketEvent::new(
-                            event.to_string(),
-                            SocketPayload::from_socket_io(payload),
-                        ));
-                    }
-                    .boxed()
-                })
-                .on("open", move |payload, _| {
-                    let sender = open_sender.clone();
-                    async move {
-                        let _ = sender.send(SocketEvent::new(
-                            "open",
-                            SocketPayload::from_socket_io(payload),
-                        ));
-                    }
-                    .boxed()
-                })
-                .on("close", move |payload, _| {
-                    let sender = close_sender.clone();
-                    async move {
-                        let _ = sender.send(SocketEvent::new(
-                            "close",
-                            SocketPayload::from_socket_io(payload),
-                        ));
-                    }
-                    .boxed()
-                })
-                .on("error", move |payload, client| {
-                    let sender = error_sender.clone();
-                    let stopped = Arc::clone(&error_stopped);
-                    let active = Arc::clone(&error_active);
-                    async move {
-                        if is_invalid_token_payload(&payload) {
-                            stopped.store(true, Ordering::Release);
-                            active.store(false, Ordering::Release);
-                            let _ = client.disconnect().await;
-                        }
-                        let _ = sender.send(SocketEvent::new(
-                            "error",
-                            SocketPayload::from_socket_io(payload),
-                        ));
-                    }
-                    .boxed()
-                })
-                .on_reconnect(move || {
-                    let provider = Arc::clone(&reconnect_provider);
-                    let stopped = Arc::clone(&reconnect_stopped);
-                    async move {
-                        let mut settings = ReconnectSettings::new();
-                        match next_token(provider.as_ref()) {
-                            Some(token) => settings.auth(serde_json::json!({ "token": token })),
-                            None => {
-                                stopped.store(true, Ordering::Release);
-                                // An empty credential forces the backend to reject
-                                // the attempt; the error callback then closes the
-                                // retry loop instead of reusing stale auth.
-                                settings.auth(serde_json::json!({ "token": "" }));
-                            }
-                        }
-                        settings
-                    }
-                    .boxed()
-                })
-                .reconnect(true)
-                .reconnect_delay(1_000, 30_000)
-                .max_reconnect_attempts(10)
-                .on("connect", move |payload, _| {
-                    if let Some(ready) = ready_callback_tx
-                        .lock()
-                        .expect("ready sender poisoned")
-                        .take()
-                    {
-                        let _ = ready.send(());
-                    }
-                    let sender = connect_sender.clone();
-                    async move {
-                        let _ = sender.send(SocketEvent::new(
-                            "connect",
-                            SocketPayload::from_socket_io(payload),
-                        ));
-                    }
-                    .boxed()
-                })
-                .connect(),
-        )
-        .await
-        .map_err(|_| Error::SocketConnectTimeout)??;
-
-        // The builder returns as soon as it writes the CONNECT packet. Wait for
-        // the server's CONNECT ACK before exposing this connection to callers.
-        tokio::time::timeout(Duration::from_secs(10), ready_rx)
-            .await
-            .map_err(|_| Error::SocketConnectTimeout)?
-            .map_err(|_| Error::SocketAckClosed)?;
-        loop_active.store(true, Ordering::Release);
+        tokio::spawn(supervisor::run(
+            base_url,
+            token,
+            Arc::clone(&token_provider),
+            command_rx,
+            event_tx,
+            Arc::clone(&loop_active),
+            Arc::clone(&stopped_on_failure),
+        ));
 
         Ok(Self {
-            client,
+            commands,
             events,
             loop_active,
             stopped_on_failure,
