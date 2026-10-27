@@ -229,7 +229,6 @@ async fn socket_connect_ack(
         _ = shutdown.changed() => return Err(ConnectFailure::Shutdown),
         open = timeout(CONNECT_TIMEOUT, socket.next()) => open,
     }
-        .await
         .map_err(|_| ConnectFailure::Retryable("Engine.IO open timed out".into()))?
         .ok_or_else(|| ConnectFailure::Retryable("closed before Engine.IO open".into()))?
         .map_err(|error| ConnectFailure::Retryable(error.to_string()))?;
@@ -251,8 +250,10 @@ async fn socket_connect_ack(
         .map_err(|error| ConnectFailure::Retryable(error.to_string()))?;
 
     loop {
-        let message = timeout(CONNECT_TIMEOUT, socket.next())
-            .await
+        let message = tokio::select! {
+            _ = shutdown.changed() => return Err(ConnectFailure::Shutdown),
+            message = timeout(CONNECT_TIMEOUT, socket.next()) => message,
+        }
             .map_err(|_| ConnectFailure::Retryable("Socket.IO CONNECT ACK timed out".into()))?
             .ok_or_else(|| ConnectFailure::Retryable("closed before Socket.IO CONNECT ACK".into()))?
             .map_err(|error| ConnectFailure::Retryable(error.to_string()))?;
@@ -287,6 +288,7 @@ async fn socket_connect_ack(
 enum ConnectFailure {
     Retryable(String),
     InvalidToken(String),
+    Shutdown,
 }
 
 fn collect_commands(
@@ -310,8 +312,10 @@ async fn sleep_or_disconnect(
     duration: Duration,
     commands: &mut mpsc::Receiver<Command>,
     pending: &mut VecDeque<Command>,
+    shutdown: &mut watch::Receiver<bool>,
 ) -> bool {
     tokio::select! {
+        _ = shutdown.changed() => true,
         _ = sleep(duration) => false,
         command = commands.recv() => match command {
             Some(Command::Disconnect(reply)) => { let _ = reply.send(()); true }
@@ -327,6 +331,7 @@ async fn drive_ready_socket(
     commands: &mut mpsc::Receiver<Command>,
     pending: &mut VecDeque<Command>,
     events: &mpsc::Sender<SocketEvent>,
+    shutdown: &mut watch::Receiver<bool>,
 ) -> bool {
     let mut ack_id = 0u64;
     let mut acknowledgements =
@@ -345,6 +350,7 @@ async fn drive_ready_socket(
             continue;
         }
         tokio::select! {
+            _ = shutdown.changed() => { fail_acks(acknowledgements); return false; }
             command = commands.recv() => match command {
                 Some(Command::Disconnect(reply)) => {
                     let _ = reply.send(());
