@@ -111,14 +111,12 @@ async fn connect_event_exposes_socket_io_sid_and_emitter_drains_events_during_ac
         let id = &tail[..ack_id];
         for index in 0..257 {
             socket
-                .send(Message::Text(
-                    format!("42{}", json!(["burst", index])).into(),
-                ))
+                .send(Message::Text(format!("42{}", json!(["burst", index]))))
                 .await
                 .unwrap();
         }
         socket
-            .send(Message::Text(format!("43{id}[{{\"ok\":true}}]").into()))
+            .send(Message::Text(format!("43{id}[{{\"ok\":true}}]")))
             .await
             .unwrap();
     });
