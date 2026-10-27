@@ -125,3 +125,16 @@ async fn queued_emits_do_not_shorten_the_reconnect_backoff() {
     assert_eq!(pending.len(), 1);
     drop(shutdown);
 }
+
+#[test]
+fn retries_escalate_once_at_attempt_five_and_stop_at_ten_with_capped_backoff() {
+    let mut retry = RetryState::default();
+    let expected = [1, 2, 4, 8, 16, 30, 30, 30, 30, 30];
+
+    for (index, seconds) in expected.into_iter().enumerate() {
+        let decision = retry.failed_attempt();
+        assert_eq!(decision.delay, Duration::from_secs(seconds));
+        assert_eq!(decision.escalate, index == 4);
+        assert_eq!(decision.exhausted, index == 9);
+    }
+}
