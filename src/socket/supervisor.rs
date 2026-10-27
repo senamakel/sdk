@@ -401,9 +401,9 @@ async fn drive_ready_socket(
             },
             message = socket.next() => match message {
                 Some(Ok(Message::Text(frame))) => {
-                    if frame.starts_with('2') {
+                    if let Some(payload) = frame.strip_prefix('2') {
                         heartbeat_deadline = Instant::now() + heartbeat_timeout;
-                        if socket.send(Message::Text(format!("3{}", &frame[1..]))).await.is_err() { fail_acks(acknowledgements); return true; }
+                        if socket.send(Message::Text(format!("3{payload}"))).await.is_err() { fail_acks(acknowledgements); return true; }
                     } else if frame.starts_with("43") {
                         handle_ack(&frame, &mut acknowledgements);
                     } else if let Some(frame) = frame.strip_prefix("42") {
