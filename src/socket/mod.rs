@@ -19,7 +19,7 @@ use url::Url;
 
 use crate::Error;
 mod supervisor;
-use supervisor::{Command, OutgoingPayload, TokenProvider};
+use supervisor::{Command, OutgoingPayload, Settings, TokenProvider};
 
 pub mod events;
 
@@ -104,13 +104,15 @@ impl SocketConnection {
         let loop_active = Arc::new(AtomicBool::new(false));
         let stopped_on_failure = Arc::new(AtomicBool::new(false));
         tokio::spawn(supervisor::run(
-            base_url,
-            token,
-            Arc::clone(&token_provider),
+            Settings {
+                base_url,
+                initial_token: token,
+                token_provider: Arc::clone(&token_provider),
+                loop_active: Arc::clone(&loop_active),
+                stopped_on_failure: Arc::clone(&stopped_on_failure),
+            },
             command_rx,
             event_tx,
-            Arc::clone(&loop_active),
-            Arc::clone(&stopped_on_failure),
             shutdown_rx,
         ));
 

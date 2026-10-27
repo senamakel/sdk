@@ -30,6 +30,16 @@ const EMIT_QUEUE_CAPACITY: usize = 128;
 
 type SocketStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 pub(super) type TokenProvider = Arc<dyn Fn() -> Option<String> + Send + Sync>;
+type AckSender = oneshot::Sender<Result<SocketPayload, Error>>;
+type PendingAck = (u64, Instant, AckSender);
+
+pub(super) struct Settings {
+    pub base_url: String,
+    pub initial_token: String,
+    pub token_provider: TokenProvider,
+    pub loop_active: Arc<AtomicBool>,
+    pub stopped_on_failure: Arc<AtomicBool>,
+}
 
 pub(super) enum Command {
     Emit {
@@ -47,15 +57,18 @@ pub(super) enum OutgoingPayload {
 }
 
 pub(super) async fn run(
-    base_url: String,
-    initial_token: String,
-    token_provider: TokenProvider,
+    settings: Settings,
     mut commands: mpsc::Receiver<Command>,
     events: mpsc::Sender<SocketEvent>,
-    loop_active: Arc<AtomicBool>,
-    stopped_on_failure: Arc<AtomicBool>,
     mut shutdown: watch::Receiver<bool>,
 ) {
+    let Settings {
+        base_url,
+        initial_token,
+        token_provider,
+        loop_active,
+        stopped_on_failure,
+    } = settings;
     loop_active.store(true, Ordering::Release);
     stopped_on_failure.store(false, Ordering::Release);
 
@@ -341,8 +354,7 @@ async fn drive_ready_socket(
     shutdown: &mut watch::Receiver<bool>,
 ) -> bool {
     let mut ack_id = 0u64;
-    let mut acknowledgements =
-        VecDeque::<(u64, Instant, oneshot::Sender<Result<SocketPayload, Error>>)>::new();
+    let mut acknowledgements = VecDeque::<PendingAck>::new();
     let mut binary_event: Option<(String, usize)> = None;
     loop {
         if let Some(command) = pending.pop_front() {
@@ -371,8 +383,8 @@ async fn drive_ready_socket(
                         if socket.send(Message::Text("3".into())).await.is_err() { fail_acks(acknowledgements); return true; }
                     } else if frame.starts_with("43") {
                         handle_ack(&frame, &mut acknowledgements);
-                    } else if frame.starts_with("42") {
-                        if let Some((name, payload)) = parse_event(&frame[2..]) {
+                    } else if let Some(frame) = frame.strip_prefix("42") {
+                        if let Some((name, payload)) = parse_event(frame) {
                             let _ = events.send(SocketEvent::new(name, SocketPayload::Json(payload))).await;
                         }
                     } else if frame.starts_with("451-") {
@@ -403,7 +415,7 @@ async fn send_command(
     socket: &mut SocketStream,
     command: Command,
     ack_id: &mut u64,
-    acknowledgements: &mut VecDeque<(u64, Instant, oneshot::Sender<Result<SocketPayload, Error>>)>,
+    acknowledgements: &mut VecDeque<PendingAck>,
 ) -> bool {
     match command {
         Command::Emit {
@@ -448,7 +460,7 @@ async fn send_command(
                     return true;
                 }
             };
-            if let Err(_) = socket.send(Message::Text(packet)).await {
+            if socket.send(Message::Text(packet)).await.is_err() {
                 if let Some(sent) = sent {
                     let _ = sent.send(Err(Error::SocketAckClosed));
                 }
@@ -485,10 +497,7 @@ fn parse_binary_event(packet: &str) -> Option<(String, usize)> {
     Some((values.first()?.as_str()?.to_owned(), 1))
 }
 
-fn handle_ack(
-    frame: &str,
-    acknowledgements: &mut VecDeque<(u64, Instant, oneshot::Sender<Result<SocketPayload, Error>>)>,
-) {
+fn handle_ack(frame: &str, acknowledgements: &mut VecDeque<PendingAck>) {
     let Some(tail) = frame.strip_prefix("43") else {
         return;
     };
@@ -509,15 +518,13 @@ fn handle_ack(
     }
 }
 
-fn fail_acks(acks: VecDeque<(u64, Instant, oneshot::Sender<Result<SocketPayload, Error>>)>) {
+fn fail_acks(acks: VecDeque<PendingAck>) {
     for (_, _, sender) in acks {
         let _ = sender.send(Err(Error::SocketAckClosed));
     }
 }
 
-async fn next_ack_deadline(
-    acknowledgements: &VecDeque<(u64, Instant, oneshot::Sender<Result<SocketPayload, Error>>)>,
-) {
+async fn next_ack_deadline(acknowledgements: &VecDeque<PendingAck>) {
     let deadline = acknowledgements
         .iter()
         .map(|(_, deadline, _)| *deadline)
@@ -526,9 +533,7 @@ async fn next_ack_deadline(
     sleep_until(deadline).await;
 }
 
-fn expire_acks(
-    acknowledgements: &mut VecDeque<(u64, Instant, oneshot::Sender<Result<SocketPayload, Error>>)>,
-) {
+fn expire_acks(acknowledgements: &mut VecDeque<PendingAck>) {
     let now = Instant::now();
     let mut index = 0;
     while index < acknowledgements.len() {
