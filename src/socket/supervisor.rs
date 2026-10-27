@@ -41,6 +41,14 @@ pub(super) struct Settings {
     pub stopped_on_failure: Arc<AtomicBool>,
 }
 
+struct ActiveGuard(Arc<AtomicBool>);
+
+impl Drop for ActiveGuard {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
+
 pub(super) enum Command {
     Emit {
         event: String,
@@ -70,6 +78,7 @@ pub(super) async fn run(
         stopped_on_failure,
     } = settings;
     loop_active.store(true, Ordering::Release);
+    let _active_guard = ActiveGuard(Arc::clone(&loop_active));
     stopped_on_failure.store(false, Ordering::Release);
 
     let mut pending = VecDeque::new();
@@ -191,7 +200,6 @@ pub(super) async fn run(
     while let Ok(command) = commands.try_recv() {
         fail_command(command);
     }
-    loop_active.store(false, Ordering::Release);
 }
 
 async fn connect_with_redirects(
