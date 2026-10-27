@@ -171,6 +171,14 @@ async fn connect_with_redirects(
     url: &mut String,
     shutdown: &mut watch::Receiver<bool>,
 ) -> Result<SocketStream, ConnectFailure> {
+    connect_with_redirects_within(url, shutdown, CONNECT_TIMEOUT).await
+}
+
+async fn connect_with_redirects_within(
+    url: &mut String,
+    shutdown: &mut watch::Receiver<bool>,
+    hop_timeout: Duration,
+) -> Result<SocketStream, ConnectFailure> {
     for hop in 0..=MAX_REDIRECT_HOPS {
         validate_endpoint(url).map_err(|error| ConnectFailure::Retryable(error.to_string()))?;
         let mut request = url
@@ -183,12 +191,12 @@ async fn connect_with_redirects(
         );
         let result = tokio::select! {
             _ = shutdown.changed() => return Err(ConnectFailure::Shutdown),
-            result = timeout(CONNECT_TIMEOUT, connect_async(request)) => result,
+            result = timeout(hop_timeout, connect_async(request)) => result,
         };
         match result {
             Err(_) => {
                 return Err(ConnectFailure::Retryable(
-                    "websocket upgrade timed out".into(),
+                    format!("websocket upgrade timed out after {hop_timeout:?}"),
                 ))
             }
             Ok(Ok((socket, _))) => return Ok(socket),
@@ -215,6 +223,10 @@ async fn connect_with_redirects(
         "too many socket redirects".into(),
     ))
 }
+
+#[cfg(test)]
+#[path = "supervisor_tests.rs"]
+mod tests;
 
 fn is_redirect(status: StatusCode) -> bool {
     matches!(status.as_u16(), 301 | 302 | 307 | 308)
