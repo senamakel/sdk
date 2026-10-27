@@ -99,13 +99,6 @@ pub enum Error {
     },
 }
 
-#[cfg(feature = "socket")]
-impl From<rust_socketio::Error> for Error {
-    fn from(error: rust_socketio::Error) -> Self {
-        Self::Socket(Box::new(error))
-    }
-}
-
 #[derive(Clone)]
 pub struct TinyHumansClient {
     http: HttpClient,

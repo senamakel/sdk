@@ -28,7 +28,7 @@ futures = "0.3"
 # The SDK owns the Engine.IO session/reconnect lifecycle so credentials and
 # queued emits remain under its connection policy.
 tokio-tungstenite = { version = "0.21", features = ["rustls-tls-webpki-roots"], optional = true }
-tokio = { version = "1", features = ["sync", "time", "net"] }
+tokio = { version = "1", features = ["sync", "time", "net", "rt", "macros"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "net", "io-util"] }

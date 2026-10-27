@@ -183,7 +183,7 @@ impl SocketConnection {
             .await
             .map_err(|_| Error::SocketAckTimeout)?
             .map_err(|_| Error::SocketAckClosed)?;
-        payload.decode(event)
+        payload?.decode(event)
     }
 
     /// Close the connection intentionally.
