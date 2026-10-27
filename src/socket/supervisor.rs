@@ -200,12 +200,6 @@ pub(super) async fn run(
 
         match socket_connect_ack(&mut socket, &token, &mut shutdown, &events).await {
             Ok(heartbeat) => {
-                let _ = events
-                    .send(SocketEvent::new(
-                        "connect",
-                        SocketPayload::Json(vec![json!({})]),
-                    ))
-                    .await;
                 let lost = drive_ready_socket(
                     &mut socket,
                     &mut commands,
@@ -392,6 +386,16 @@ async fn socket_connect_ack(
         .map_err(|error| ConnectFailure::Retryable(error.to_string()))?;
         match message {
             Message::Text(frame) if frame.starts_with("40") => {
+                let socket_namespace = frame
+                    .strip_prefix("40")
+                    .and_then(|payload| serde_json::from_str::<Value>(payload).ok())
+                    .unwrap_or(Value::Null);
+                let _ = events
+                    .send(SocketEvent::new(
+                        "connect",
+                        SocketPayload::Json(vec![socket_namespace]),
+                    ))
+                    .await;
                 return Ok(Duration::from_millis(ping_interval + ping_timeout + 5_000));
             }
             Message::Text(frame) if frame.starts_with("44") => {
