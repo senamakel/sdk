@@ -126,6 +126,75 @@ async fn queued_emits_do_not_shorten_the_reconnect_backoff() {
     drop(shutdown);
 }
 
+#[tokio::test(start_paused = true)]
+async fn retry_exhaustion_sets_terminal_flags() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    drop(listener);
+    let loop_active = Arc::new(AtomicBool::new(false));
+    let stopped_on_failure = Arc::new(AtomicBool::new(false));
+    let (_command_tx, command_rx) = mpsc::channel(1);
+    let (events_tx, _events_rx) = mpsc::channel(16);
+    let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+    let settings = Settings {
+        base_url: format!("http://{address}"),
+        initial_token: "token".to_owned(),
+        token_provider: Arc::new(|| Some("token".to_owned())),
+        loop_active: Arc::clone(&loop_active),
+        stopped_on_failure: Arc::clone(&stopped_on_failure),
+        retry: RetryConfig {
+            max_attempts: 2,
+            initial_backoff: Duration::from_millis(1),
+            max_backoff: Duration::from_millis(2),
+        },
+    };
+
+    run(settings, command_rx, events_tx, shutdown_rx).await;
+
+    assert!(!loop_active.load(Ordering::Acquire));
+    assert!(stopped_on_failure.load(Ordering::Acquire));
+}
+
+#[tokio::test(start_paused = true)]
+async fn supervisor_emits_one_escalation_event_at_attempt_five() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    drop(listener);
+    let loop_active = Arc::new(AtomicBool::new(false));
+    let stopped_on_failure = Arc::new(AtomicBool::new(false));
+    let (_command_tx, command_rx) = mpsc::channel(1);
+    let (events_tx, mut events_rx) = mpsc::channel(16);
+    let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+    let settings = Settings {
+        base_url: format!("http://{address}"),
+        initial_token: "token".to_owned(),
+        token_provider: Arc::new(|| Some("token".to_owned())),
+        loop_active: Arc::clone(&loop_active),
+        stopped_on_failure: Arc::clone(&stopped_on_failure),
+        retry: RetryConfig {
+            max_attempts: 6,
+            initial_backoff: Duration::from_millis(1),
+            max_backoff: Duration::from_millis(4),
+        },
+    };
+
+    run(settings, command_rx, events_tx, shutdown_rx).await;
+
+    let mut escalation_events = 0;
+    while let Ok(event) = events_rx.try_recv() {
+        if event.name == "reconnect:escalated" {
+            escalation_events += 1;
+            assert_eq!(
+                event.payload.decode::<Value>(&event.name).unwrap()["attempts"],
+                5
+            );
+        }
+    }
+    assert_eq!(escalation_events, 1);
+    assert!(!loop_active.load(Ordering::Acquire));
+    assert!(stopped_on_failure.load(Ordering::Acquire));
+}
+
 #[test]
 fn retries_escalate_once_at_attempt_five_and_stop_at_ten_with_capped_backoff() {
     let mut retry = RetryState::default();
