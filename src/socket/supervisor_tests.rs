@@ -3,6 +3,17 @@ use tokio::io::AsyncReadExt;
 use tokio::net::TcpListener;
 
 #[tokio::test]
+async fn supervisor_error_events_are_tagged_as_internal() {
+    let (events, mut receiver) = mpsc::channel(1);
+
+    send_error(&events, "websocket upgrade failed").await;
+
+    let event = receiver.recv().await.unwrap();
+    assert_eq!(event.name, "error");
+    assert_eq!(event.source, super::super::SocketEventSource::Supervisor);
+}
+
+#[tokio::test]
 async fn every_websocket_redirect_hop_has_its_own_connect_deadline() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();

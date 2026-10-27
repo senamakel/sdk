@@ -109,6 +109,12 @@ async fn connect_event_exposes_socket_io_sid_and_emitter_drains_events_during_ac
         let tail = emit.strip_prefix("42").unwrap();
         let ack_id = tail.bytes().take_while(u8::is_ascii_digit).count();
         let id = &tail[..ack_id];
+        socket
+            .send(Message::Text(
+                format!("42{}", json!(["error", {"msg": "backend failure"}])),
+            ))
+            .await
+            .unwrap();
         for index in 0..257 {
             socket
                 .send(Message::Text(format!("42{}", json!(["burst", index]))))
@@ -130,6 +136,7 @@ async fn connect_event_exposes_socket_io_sid_and_emitter_drains_events_during_ac
     let _open = connection.next_event().await.unwrap();
     let connected = connection.next_event().await.unwrap();
     assert_eq!(connected.name, "connect");
+    assert_eq!(connected.source, SocketEventSource::Supervisor);
     assert_eq!(connected.decode::<Value>().unwrap()["sid"], "socket-io-sid");
 
     let emitter = connection.emitter();
@@ -139,6 +146,7 @@ async fn connect_event_exposes_socket_io_sid_and_emitter_drains_events_during_ac
             .await
     });
     let mut burst_events = 0;
+    let mut backend_error_seen = false;
     while burst_events < 257 {
         let event = tokio::time::timeout(Duration::from_secs(3), connection.next_event())
             .await
@@ -146,8 +154,13 @@ async fn connect_event_exposes_socket_io_sid_and_emitter_drains_events_during_ac
             .unwrap();
         if event.name == "burst" {
             burst_events += 1;
+        } else if event.name == "error" {
+            assert_eq!(event.source, SocketEventSource::Backend);
+            assert_eq!(event.decode::<Value>().unwrap()["msg"], "backend failure");
+            backend_error_seen = true;
         }
     }
+    assert!(backend_error_seen);
     assert_eq!(ack.await.unwrap().unwrap(), json!({"ok": true}));
     connection.disconnect().await.unwrap();
     server.await.unwrap();
