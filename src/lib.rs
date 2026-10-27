@@ -232,7 +232,24 @@ impl TinyHumansClient {
     #[cfg(feature = "socket")]
     pub async fn connect_socket(&self) -> Result<socket::SocketConnection, Error> {
         let token = self.http.token.clone().ok_or(Error::MissingSocketToken)?;
-        socket::SocketConnection::connect(self.http.base_url.clone(), token).await
+        self.connect_socket_with_token_provider(move || Some(token.clone())).await
+    }
+
+    /// Connect with a token provider that is called for the initial connection
+    /// and before each reconnect attempt.
+    #[cfg(feature = "socket")]
+    pub async fn connect_socket_with_token_provider<F>(
+        &self,
+        token_provider: F,
+    ) -> Result<socket::SocketConnection, Error>
+    where
+        F: Fn() -> Option<String> + Send + Sync + 'static,
+    {
+        socket::SocketConnection::connect(
+            self.http.base_url.clone(),
+            std::sync::Arc::new(token_provider),
+        )
+        .await
     }
 }
 

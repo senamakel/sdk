@@ -7,11 +7,12 @@
 //! acknowledgement-based emits.
 
 use std::fmt;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use futures::FutureExt;
-use rust_socketio::asynchronous::{Client, ClientBuilder};
+use rust_socketio::asynchronous::{Client, ClientBuilder, ReconnectSettings};
 use rust_socketio::Payload;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -85,6 +86,8 @@ impl SocketEvent {
 pub struct SocketConnection {
     client: Client,
     events: mpsc::UnboundedReceiver<SocketEvent>,
+    loop_active: Arc<AtomicBool>,
+    stopped_on_failure: Arc<AtomicBool>,
 }
 
 #[cfg(test)]
@@ -100,8 +103,13 @@ impl fmt::Debug for SocketConnection {
 }
 
 impl SocketConnection {
-    pub(crate) async fn connect(base_url: String, token: String) -> Result<Self, Error> {
+    pub(crate) async fn connect(
+        base_url: String,
+        token_provider: Arc<dyn Fn() -> Option<String> + Send + Sync>,
+    ) -> Result<Self, Error> {
         validate_endpoint(&base_url)?;
+        let token = token_provider().filter(|token| !token.trim().is_empty())
+            .ok_or(Error::MissingSocketToken)?;
         let (sender, events) = mpsc::unbounded_channel();
 
         let any_sender = sender.clone();
@@ -109,6 +117,12 @@ impl SocketConnection {
         let close_sender = sender.clone();
         let connect_sender = sender.clone();
         let error_sender = sender;
+        let loop_active = Arc::new(AtomicBool::new(false));
+        let stopped_on_failure = Arc::new(AtomicBool::new(false));
+        let reconnect_provider = Arc::clone(&token_provider);
+        let reconnect_stopped = Arc::clone(&stopped_on_failure);
+        let error_stopped = Arc::clone(&stopped_on_failure);
+        let error_active = Arc::clone(&loop_active);
         let (ready_tx, ready_rx) = oneshot::channel();
         let ready_tx = Arc::new(Mutex::new(Some(ready_tx)));
         let ready_callback_tx = Arc::clone(&ready_tx);
@@ -145,9 +159,16 @@ impl SocketConnection {
                 }
                 .boxed()
             })
-            .on("error", move |payload, _| {
+            .on("error", move |payload, client| {
                 let sender = error_sender.clone();
+                let stopped = Arc::clone(&error_stopped);
+                let active = Arc::clone(&error_active);
                 async move {
+                    if is_invalid_token_payload(&payload) {
+                        stopped.store(true, Ordering::Release);
+                        active.store(false, Ordering::Release);
+                        let _ = client.disconnect().await;
+                    }
                     let _ = sender.send(SocketEvent::new(
                         "error",
                         SocketPayload::from_socket_io(payload),
@@ -155,6 +176,28 @@ impl SocketConnection {
                 }
                 .boxed()
             })
+            .on_reconnect(move || {
+                let provider = Arc::clone(&reconnect_provider);
+                let stopped = Arc::clone(&reconnect_stopped);
+                async move {
+                    let mut settings = ReconnectSettings::new();
+                    match provider().filter(|token| !token.trim().is_empty()) {
+                        Some(token) => settings.auth(serde_json::json!({ "token": token })),
+                        None => {
+                            stopped.store(true, Ordering::Release);
+                            // An empty credential forces the backend to reject
+                            // the attempt; the error callback then closes the
+                            // retry loop instead of reusing stale auth.
+                            settings.auth(serde_json::json!({ "token": "" }));
+                        }
+                    }
+                    settings
+                }
+                .boxed()
+            })
+            .reconnect(true)
+            .reconnect_delay(1_000, 30_000)
+            .max_reconnect_attempts(10)
             .on("connect", move |payload, _| {
                 if let Some(ready) = ready_callback_tx.lock().expect("ready sender poisoned").take() {
                     let _ = ready.send(());
@@ -176,8 +219,9 @@ impl SocketConnection {
             .await
             .map_err(|_| Error::SocketConnectTimeout)?
             .map_err(|_| Error::SocketAckClosed)?;
+        loop_active.store(true, Ordering::Release);
 
-        Ok(Self { client, events })
+        Ok(Self { client, events, loop_active, stopped_on_failure })
     }
 
     /// Wait for the next incoming event.
@@ -243,9 +287,31 @@ impl SocketConnection {
 
     /// Close the connection intentionally.
     pub async fn disconnect(&self) -> Result<(), Error> {
+        self.loop_active.store(false, Ordering::Release);
         self.client.disconnect().await?;
         Ok(())
     }
+
+    /// Whether the SDK's bounded reconnect loop is still active.
+    pub fn loop_active(&self) -> bool {
+        self.loop_active.load(Ordering::Acquire)
+    }
+
+    /// Whether reconnecting stopped after a terminal token failure.
+    pub fn stopped_on_failure(&self) -> bool {
+        self.stopped_on_failure.load(Ordering::Acquire)
+    }
+}
+
+fn is_invalid_token_payload(payload: &Payload) -> bool {
+    let message = match payload {
+        Payload::Text(values) => values.iter().map(Value::to_string).collect::<Vec<_>>().join(" "),
+        Payload::Binary(bytes) => String::from_utf8_lossy(bytes).into_owned(),
+        #[allow(deprecated)]
+        Payload::String(text) => text.clone(),
+    };
+    let message = message.to_ascii_lowercase();
+    message.contains("invalid token") || message.contains("token expired")
 }
 
 fn validate_endpoint(endpoint: &str) -> Result<Url, Error> {
