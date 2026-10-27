@@ -124,10 +124,16 @@ async fn invalid_socket_token_stops_supervisor() {
     let client =
         TinyHumansClient::new(format!("http://{address}")).with_token(Some("expired-token".into()));
     let mut connection = client.connect_socket().await.unwrap();
-    let event = tokio::time::timeout(std::time::Duration::from_secs(3), connection.next_event())
-        .await
-        .unwrap()
-        .unwrap();
+    let event = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            let event = connection.next_event().await.unwrap();
+            if event.name == "error" {
+                break event;
+            }
+        }
+    })
+    .await
+    .unwrap();
     assert_eq!(event.name, "error");
     for _ in 0..10 {
         if connection.stopped_on_failure() {
@@ -175,8 +181,10 @@ async fn reconnect_fetches_a_fresh_token_for_each_attempt() {
         })
         .await
         .unwrap();
+    assert_eq!(connection.next_event().await.unwrap().name, "open");
     assert_eq!(connection.next_event().await.unwrap().name, "connect");
     assert_eq!(connection.next_event().await.unwrap().name, "close");
+    assert_eq!(connection.next_event().await.unwrap().name, "open");
     assert_eq!(connection.next_event().await.unwrap().name, "connect");
     assert_eq!(attempt.load(std::sync::atomic::Ordering::SeqCst), 2);
     connection.disconnect().await.unwrap();
