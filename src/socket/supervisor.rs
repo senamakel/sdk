@@ -99,6 +99,11 @@ pub(super) async fn run(
                 send_error(&events, &message).await;
                 break;
             }
+            Err(ConnectFailure::Policy(message)) => {
+                stopped_on_failure.store(true, Ordering::Release);
+                send_error(&events, &message).await;
+                break;
+            }
             Err(ConnectFailure::Retryable(message)) => {
                 attempts = attempts.saturating_add(1);
                 send_error(&events, &message).await;
@@ -154,6 +159,11 @@ pub(super) async fn run(
                 send_error(&events, &message).await;
                 break;
             }
+            Err(ConnectFailure::Policy(message)) => {
+                stopped_on_failure.store(true, Ordering::Release);
+                send_error(&events, &message).await;
+                break;
+            }
             Err(ConnectFailure::Shutdown) => break,
             Err(ConnectFailure::Retryable(message)) => {
                 attempts = attempts.saturating_add(1);
@@ -194,7 +204,7 @@ async fn connect_with_redirects_within(
     hop_timeout: Duration,
 ) -> Result<SocketStream, ConnectFailure> {
     for hop in 0..=MAX_REDIRECT_HOPS {
-        validate_endpoint(url).map_err(|error| ConnectFailure::Retryable(error.to_string()))?;
+        validate_endpoint(url).map_err(|error| ConnectFailure::Policy(error.to_string()))?;
         let mut request = url
             .as_str()
             .into_client_request()
@@ -227,8 +237,12 @@ async fn connect_with_redirects_within(
                     .get(LOCATION)
                     .and_then(|value| value.to_str().ok())
                     .ok_or_else(|| ConnectFailure::Retryable("redirect missing Location".into()))?;
-                *url = redirect_target(url, location)
-                    .map_err(|error| ConnectFailure::Retryable(error.to_string()))?;
+                *url = redirect_target(url, location).map_err(|error| match error {
+                    Error::CrossOriginSocketRedirect | Error::UnsafeSocketEndpoint => {
+                        ConnectFailure::Policy(error.to_string())
+                    }
+                    _ => ConnectFailure::Retryable(error.to_string()),
+                })?;
             }
             Ok(Err(error)) => return Err(ConnectFailure::Retryable(error.to_string())),
         }
@@ -332,6 +346,7 @@ async fn socket_connect_ack(
 enum ConnectFailure {
     Retryable(String),
     InvalidToken(String),
+    Policy(String),
     Shutdown,
 }
 
