@@ -8,12 +8,9 @@
 
 use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
-use futures::FutureExt;
-use rust_socketio::asynchronous::{Client, ClientBuilder, ReconnectSettings};
-use rust_socketio::Payload;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::Value;
@@ -21,6 +18,8 @@ use tokio::sync::{mpsc, oneshot};
 use url::Url;
 
 use crate::Error;
+mod supervisor;
+use supervisor::{Command, OutgoingPayload, TokenProvider};
 
 pub mod events;
 
@@ -36,17 +35,6 @@ pub enum SocketPayload {
 }
 
 impl SocketPayload {
-    fn from_socket_io(payload: Payload) -> Self {
-        match payload {
-            Payload::Text(values) => Self::Json(values),
-            Payload::Binary(bytes) => Self::Binary(bytes.to_vec()),
-            #[allow(deprecated)]
-            Payload::String(text) => Self::Json(vec![
-                serde_json::from_str(&text).unwrap_or(Value::String(text))
-            ]),
-        }
-    }
-
     /// Decode the first JSON argument as a concrete event type.
     pub fn decode<T: DeserializeOwned>(&self, event_name: &str) -> Result<T, Error> {
         let Self::Json(values) = self else {
@@ -84,8 +72,8 @@ impl SocketEvent {
 
 /// A connected, authenticated Socket.IO client plus its incoming event queue.
 pub struct SocketConnection {
-    client: Client,
-    events: mpsc::UnboundedReceiver<SocketEvent>,
+    commands: mpsc::Sender<Command>,
+    events: mpsc::Receiver<SocketEvent>,
     loop_active: Arc<AtomicBool>,
     stopped_on_failure: Arc<AtomicBool>,
 }
