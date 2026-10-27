@@ -114,8 +114,6 @@ pub(super) async fn run(
 
         match socket_connect_ack(&mut socket, &token).await {
             Ok(()) => {
-                attempts = 0;
-                backoff = Duration::from_secs(1);
                 let _ = events
                     .send(SocketEvent::new("connect", SocketPayload::Json(vec![json!({})])))
                     .await;
@@ -141,7 +139,7 @@ pub(super) async fn run(
         }
 
         let lost = drive_ready_socket(&mut socket, &mut commands, &mut pending, &events).await;
-        drain_pending(&mut pending, Error::SocketAckClosed);
+        drain_pending(&mut pending);
         if !lost {
             break;
         }
@@ -156,7 +154,7 @@ pub(super) async fn run(
         backoff = (backoff * 2).min(MAX_BACKOFF);
     }
 
-    drain_pending(&mut pending, Error::SocketAckClosed);
+    drain_pending(&mut pending);
     while let Ok(command) = commands.try_recv() {
         fail_command(command);
     }
@@ -402,10 +400,10 @@ fn handle_ack(
     frame: &str,
     acknowledgements: &mut VecDeque<(u64, oneshot::Sender<Result<SocketPayload, Error>>)>,
 ) {
-    let tail = frame.strip_prefix("43")?;
+    let Some(tail) = frame.strip_prefix("43") else { return; };
     let digit_count = tail.bytes().take_while(u8::is_ascii_digit).count();
-    let id = tail[..digit_count].parse::<u64>().ok()?;
-    let values = serde_json::from_str::<Vec<Value>>(&tail[digit_count..]).ok()?;
+    let Ok(id) = tail[..digit_count].parse::<u64>() else { return; };
+    let Ok(values) = serde_json::from_str::<Vec<Value>>(&tail[digit_count..]) else { return; };
     if let Some(index) = acknowledgements.iter().position(|(pending, _)| *pending == id) {
         if let Some((_, sender)) = acknowledgements.remove(index) {
             let _ = sender.send(Ok(SocketPayload::Json(values)));
@@ -417,11 +415,11 @@ fn fail_acks(acks: VecDeque<(u64, oneshot::Sender<Result<SocketPayload, Error>>)
     for (_, sender) in acks { let _ = sender.send(Err(Error::SocketAckClosed)); }
 }
 
-fn drain_pending(pending: &mut VecDeque<Command>, error: Error) {
+fn drain_pending(pending: &mut VecDeque<Command>) {
     while let Some(command) = pending.pop_front() {
         match command {
             Command::Emit { ack, sent, .. } => {
-                if let Some(sent) = sent { let _ = sent.send(Err(error)); }
+                if let Some(sent) = sent { let _ = sent.send(Err(Error::SocketAckClosed)); }
                 if let Some(ack) = ack { let _ = ack.send(Err(Error::SocketAckClosed)); }
             }
             Command::Disconnect(reply) => { let _ = reply.send(()); }
