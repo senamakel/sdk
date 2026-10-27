@@ -39,6 +39,72 @@ pub(super) struct Settings {
     pub token_provider: TokenProvider,
     pub loop_active: Arc<AtomicBool>,
     pub stopped_on_failure: Arc<AtomicBool>,
+    pub retry: RetryConfig,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct RetryConfig {
+    pub max_attempts: u32,
+    pub initial_backoff: Duration,
+    pub max_backoff: Duration,
+}
+
+impl Default for RetryConfig {
+    fn default() -> Self {
+        Self {
+            max_attempts: MAX_RECONNECT_ATTEMPTS,
+            initial_backoff: Duration::from_secs(1),
+            max_backoff: MAX_BACKOFF,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct RetryDecision {
+    delay: Duration,
+    escalate: bool,
+    exhausted: bool,
+}
+
+struct RetryState {
+    config: RetryConfig,
+    attempts: u32,
+    next_delay: Duration,
+}
+
+impl Default for RetryState {
+    fn default() -> Self {
+        Self::new(RetryConfig::default())
+    }
+}
+
+impl RetryState {
+    fn new(config: RetryConfig) -> Self {
+        Self {
+            next_delay: config.initial_backoff,
+            config,
+            attempts: 0,
+        }
+    }
+
+    fn failed_attempt(&mut self) -> RetryDecision {
+        self.attempts = self.attempts.saturating_add(1);
+        let delay = self.next_delay;
+        self.next_delay = (self.next_delay * 2).min(self.config.max_backoff);
+        RetryDecision {
+            delay,
+            escalate: self.attempts == 5,
+            exhausted: self.attempts >= self.config.max_attempts,
+        }
+    }
+
+    fn connection_lost(&mut self) -> Duration {
+        self.attempts = 0;
+        self.next_delay = self.config.initial_backoff;
+        let delay = self.next_delay;
+        self.next_delay = (self.next_delay * 2).min(self.config.max_backoff);
+        delay
+    }
 }
 
 struct ActiveGuard(Arc<AtomicBool>);
@@ -76,6 +142,7 @@ pub(super) async fn run(
         token_provider,
         loop_active,
         stopped_on_failure,
+        retry: retry_config,
     } = settings;
     loop_active.store(true, Ordering::Release);
     let _active_guard = ActiveGuard(Arc::clone(&loop_active));
@@ -83,8 +150,7 @@ pub(super) async fn run(
 
     let mut pending = VecDeque::new();
     let mut token = Some(initial_token);
-    let mut attempts = 0u32;
-    let mut backoff = Duration::from_secs(1);
+    let mut retry = RetryState::new(retry_config);
 
     'supervisor: loop {
         if *shutdown.borrow() || collect_commands(&mut commands, &mut pending) {
