@@ -83,10 +83,11 @@ async fn emit_with_ack_queues_until_socket_connect_ack() {
 
     let client =
         TinyHumansClient::new(format!("http://{address}")).with_token(Some("access-token".into()));
-    let connection = client.connect_socket().await.unwrap();
+    let connection = Arc::new(client.connect_socket().await.unwrap());
     auth_rx.await.unwrap();
+    let ack_connection = Arc::clone(&connection);
     let emit = tokio::spawn(async move {
-        connection
+        ack_connection
             .emit_with_ack::<_, serde_json::Value>(
                 "device:hello",
                 &json!({"ok": true}),
@@ -98,6 +99,7 @@ async fn emit_with_ack_queues_until_socket_connect_ack() {
     ready_tx.send(()).unwrap();
     let ack = emit.await.unwrap().unwrap();
     assert_eq!(ack["accepted"], true);
+    connection.disconnect().await.unwrap();
     server.await.unwrap();
 }
 

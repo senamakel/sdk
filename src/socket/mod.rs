@@ -1,10 +1,12 @@
 //! Authenticated Socket.IO transport for live backend events.
 //!
 //! The backend uses Socket.IO v4 framing on `/socket.io/`; it is not a raw
-//! WebSocket endpoint. [`SocketConnection`] owns the protocol connection,
-//! automatically reconnects after network failures, exposes all event names
-//! through [`SocketConnection::next_event`], and supports JSON, binary, and
-//! acknowledgement-based emits.
+//! WebSocket endpoint. [`SocketConnection`] owns the protocol connection and
+//! its bounded reconnect supervisor, exposes event names through
+//! [`SocketConnection::next_event`], and supports JSON, binary, and
+//! acknowledgement-based emits. Credentials are sent only after a validated
+//! same-origin WebSocket upgrade and Socket.IO CONNECT is acknowledged before
+//! queued emits are sent.
 
 use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -70,7 +72,11 @@ impl SocketEvent {
     }
 }
 
-/// A connected, authenticated Socket.IO client plus its incoming event queue.
+/// An authenticated Socket.IO connection supervisor and its incoming events.
+///
+/// Connection attempts run in the background. Emit requests are queued until
+/// the server acknowledges the Socket.IO CONNECT packet. Reconnect attempts
+/// refresh the token through the configured provider.
 pub struct SocketConnection {
     commands: mpsc::Sender<Command>,
     events: mpsc::Receiver<SocketEvent>,
@@ -127,8 +133,8 @@ impl SocketConnection {
 
     /// Wait for the next incoming event.
     ///
-    /// Returns `None` only after every transport callback has gone away. Network
-    /// interruptions normally produce `close`/`error` events and reconnect.
+    /// Returns `None` after the supervisor has stopped. Network interruptions
+    /// produce `close`/`error` events while bounded reconnect attempts continue.
     pub async fn next_event(&mut self) -> Option<SocketEvent> {
         self.events.recv().await
     }
@@ -195,7 +201,9 @@ impl SocketConnection {
         payload?.decode(event)
     }
 
-    /// Close the connection intentionally.
+    /// Stop reconnecting and close the connection intentionally.
+    ///
+    /// Pending emits and acknowledgement waiters are failed during teardown.
     pub async fn disconnect(&self) -> Result<(), Error> {
         self.shutdown.send_replace(true);
         Ok(())
