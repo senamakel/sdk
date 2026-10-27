@@ -57,6 +57,12 @@ pub enum Error {
     #[error("a bearer token is required for socket.io connections")]
     MissingSocketToken,
     #[cfg(feature = "socket")]
+    #[error("socket endpoint must use TLS, except for loopback development endpoints")]
+    UnsafeSocketEndpoint,
+    #[cfg(feature = "socket")]
+    #[error("socket connection or CONNECT acknowledgement timed out")]
+    SocketConnectTimeout,
+    #[cfg(feature = "socket")]
     #[error("socket event {0} did not carry a JSON payload")]
     UnexpectedSocketPayload(String),
     #[cfg(feature = "socket")]

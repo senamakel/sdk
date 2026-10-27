@@ -17,6 +17,7 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::Value;
 use tokio::sync::{mpsc, oneshot};
+use url::Url;
 
 use crate::Error;
 
@@ -100,13 +101,18 @@ impl fmt::Debug for SocketConnection {
 
 impl SocketConnection {
     pub(crate) async fn connect(base_url: String, token: String) -> Result<Self, Error> {
+        validate_endpoint(&base_url)?;
         let (sender, events) = mpsc::unbounded_channel();
 
         let any_sender = sender.clone();
         let open_sender = sender.clone();
         let close_sender = sender.clone();
+        let connect_sender = sender.clone();
         let error_sender = sender;
-        let client = ClientBuilder::new(base_url)
+        let (ready_tx, ready_rx) = oneshot::channel();
+        let ready_tx = Arc::new(Mutex::new(Some(ready_tx)));
+        let ready_callback_tx = Arc::clone(&ready_tx);
+        let client = tokio::time::timeout(Duration::from_secs(10), ClientBuilder::new(base_url)
             .auth(serde_json::json!({ "token": token }))
             .opening_header("x-sdk-client", "tinyhumans-rust")
             .on_any(move |event, payload, _| {
@@ -149,8 +155,27 @@ impl SocketConnection {
                 }
                 .boxed()
             })
-            .connect()
-            .await?;
+            .on("connect", move |payload, _| {
+                if let Some(ready) = ready_callback_tx.lock().expect("ready sender poisoned").take() {
+                    let _ = ready.send(());
+                }
+                let sender = connect_sender.clone();
+                async move {
+                    let _ = sender.send(SocketEvent::new(
+                        "connect",
+                        SocketPayload::from_socket_io(payload),
+                    ));
+                }
+                .boxed()
+            })
+            .connect()).await.map_err(|_| Error::SocketConnectTimeout)??;
+
+        // The builder returns as soon as it writes the CONNECT packet. Wait for
+        // the server's CONNECT ACK before exposing this connection to callers.
+        tokio::time::timeout(Duration::from_secs(10), ready_rx)
+            .await
+            .map_err(|_| Error::SocketConnectTimeout)?
+            .map_err(|_| Error::SocketAckClosed)?;
 
         Ok(Self { client, events })
     }
@@ -221,5 +246,18 @@ impl SocketConnection {
         self.client.disconnect().await?;
         Ok(())
     }
+}
+
+fn validate_endpoint(endpoint: &str) -> Result<Url, Error> {
+    let url = Url::parse(endpoint).map_err(|_| Error::UnsafeSocketEndpoint)?;
+    let secure = matches!(url.scheme(), "https" | "wss");
+    let loopback = url.host_str().is_some_and(|host| {
+        host.eq_ignore_ascii_case("localhost")
+            || host.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback())
+    });
+    if !(secure || loopback) || !url.username().is_empty() || url.password().is_some() {
+        return Err(Error::UnsafeSocketEndpoint);
+    }
+    Ok(url)
 }
 
