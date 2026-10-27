@@ -10,7 +10,7 @@ async fn every_websocket_redirect_hop_has_its_own_connect_deadline() {
         let (mut stream, _) = listener.accept().await.unwrap();
         let mut request = [0; 1024];
         let _ = stream.read(&mut request).await.unwrap();
-        sleep(Duration::from_millis(150)).await;
+        tokio::time::sleep(Duration::from_millis(150)).await;
     });
     let (_shutdown_tx, mut shutdown_rx) = watch::channel(false);
     let mut endpoint = format!("ws://{address}/socket.io/?EIO=4&transport=websocket");
