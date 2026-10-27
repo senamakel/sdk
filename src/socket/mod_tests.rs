@@ -28,7 +28,9 @@ fn endpoint_policy_rejects_remote_plaintext_and_unknown_schemes() {
 fn invalid_token_detection_matches_terminal_connect_rejections_only() {
     assert!(is_invalid_token_text(r#"{"message":"Invalid token"}"#));
     assert!(is_invalid_token_text("session token expired"));
-    assert!(!is_invalid_token_text(r#"{"message":"gateway unavailable"}"#));
+    assert!(!is_invalid_token_text(
+        r#"{"message":"gateway unavailable"}"#
+    ));
 }
 
 #[test]
@@ -47,8 +49,11 @@ fn token_provider_is_queried_for_each_connection_attempt() {
 #[test]
 fn redirect_policy_follows_same_origin_and_rejects_cross_origin_credentials() {
     assert_eq!(
-        redirect_target("wss://api.example.test/socket.io/?EIO=4", "/edge/socket.io/?EIO=4")
-            .unwrap(),
+        redirect_target(
+            "wss://api.example.test/socket.io/?EIO=4",
+            "/edge/socket.io/?EIO=4"
+        )
+        .unwrap(),
         "wss://api.example.test/edge/socket.io/?EIO=4"
     );
     assert!(matches!(

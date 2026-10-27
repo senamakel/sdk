@@ -10,10 +10,10 @@ use serde_json::{json, Value};
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::{sleep, timeout};
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::header::LOCATION;
 use tokio_tungstenite::tungstenite::http::StatusCode;
 use tokio_tungstenite::tungstenite::protocol::Message;
-use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 
 use super::{
@@ -105,7 +105,10 @@ pub(super) async fn run(
         match socket_connect_ack(&mut socket, &token).await {
             Ok(()) => {
                 let _ = events
-                    .send(SocketEvent::new("connect", SocketPayload::Json(vec![json!({})])))
+                    .send(SocketEvent::new(
+                        "connect",
+                        SocketPayload::Json(vec![json!({})]),
+                    ))
                     .await;
             }
             Err(ConnectFailure::InvalidToken(message)) => {
@@ -166,13 +169,19 @@ async fn connect_with_redirects(url: &mut String) -> Result<SocketStream, Connec
             tokio_tungstenite::tungstenite::http::HeaderValue::from_static("tinyhumans-rust"),
         );
         match timeout(CONNECT_TIMEOUT, connect_async(request)).await {
-            Err(_) => return Err(ConnectFailure::Retryable("websocket upgrade timed out".into())),
+            Err(_) => {
+                return Err(ConnectFailure::Retryable(
+                    "websocket upgrade timed out".into(),
+                ))
+            }
             Ok(Ok((socket, _))) => return Ok(socket),
             Ok(Err(tokio_tungstenite::tungstenite::Error::Http(response)))
                 if is_redirect(response.status()) =>
             {
                 if hop == MAX_REDIRECT_HOPS {
-                    return Err(ConnectFailure::Retryable("too many socket redirects".into()));
+                    return Err(ConnectFailure::Retryable(
+                        "too many socket redirects".into(),
+                    ));
                 }
                 let location = response
                     .headers()
@@ -185,7 +194,9 @@ async fn connect_with_redirects(url: &mut String) -> Result<SocketStream, Connec
             Ok(Err(error)) => return Err(ConnectFailure::Retryable(error.to_string())),
         }
     }
-    Err(ConnectFailure::Retryable("too many socket redirects".into()))
+    Err(ConnectFailure::Retryable(
+        "too many socket redirects".into(),
+    ))
 }
 
 fn is_redirect(status: StatusCode) -> bool {
@@ -199,10 +210,14 @@ async fn socket_connect_ack(socket: &mut SocketStream, token: &str) -> Result<()
         .ok_or_else(|| ConnectFailure::Retryable("closed before Engine.IO open".into()))?
         .map_err(|error| ConnectFailure::Retryable(error.to_string()))?;
     let Message::Text(open) = open else {
-        return Err(ConnectFailure::Retryable("invalid Engine.IO open packet".into()));
+        return Err(ConnectFailure::Retryable(
+            "invalid Engine.IO open packet".into(),
+        ));
     };
     if !open.starts_with('0') {
-        return Err(ConnectFailure::Retryable("missing Engine.IO open packet".into()));
+        return Err(ConnectFailure::Retryable(
+            "missing Engine.IO open packet".into(),
+        ));
     }
     let auth = serde_json::to_string(&json!({ "token": token }))
         .map_err(|error| ConnectFailure::Retryable(error.to_string()))?;
@@ -250,7 +265,10 @@ enum ConnectFailure {
     InvalidToken(String),
 }
 
-fn collect_commands(commands: &mut mpsc::Receiver<Command>, pending: &mut VecDeque<Command>) -> bool {
+fn collect_commands(
+    commands: &mut mpsc::Receiver<Command>,
+    pending: &mut VecDeque<Command>,
+) -> bool {
     loop {
         match commands.try_recv() {
             Ok(Command::Disconnect(reply)) => {
@@ -287,7 +305,8 @@ async fn drive_ready_socket(
     events: &mpsc::Sender<SocketEvent>,
 ) -> bool {
     let mut ack_id = 0u64;
-    let mut acknowledgements = VecDeque::<(u64, oneshot::Sender<Result<SocketPayload, Error>>)>::new();
+    let mut acknowledgements =
+        VecDeque::<(u64, oneshot::Sender<Result<SocketPayload, Error>>)>::new();
     let mut binary_event: Option<(String, usize)> = None;
     loop {
         if let Some(command) = pending.pop_front() {
@@ -356,33 +375,62 @@ async fn send_command(
             let _ = reply.send(());
             false
         }
-        Command::Emit { event, payload, ack, sent } => {
-            let id = ack.as_ref().map(|_| { *ack_id += 1; *ack_id });
+        Command::Emit {
+            event,
+            payload,
+            ack,
+            sent,
+        } => {
+            let id = ack.as_ref().map(|_| {
+                *ack_id += 1;
+                *ack_id
+            });
             let packet = match (&payload, id) {
-                (OutgoingPayload::Json(value), Some(id)) => format!("42{id}{}", json!([event, value])),
+                (OutgoingPayload::Json(value), Some(id)) => {
+                    format!("42{id}{}", json!([event, value]))
+                }
                 (OutgoingPayload::Json(value), None) => format!("42{}", json!([event, value])),
                 (OutgoingPayload::Binary(_), Some(_)) => {
-                    if let Some(sent) = sent { let _ = sent.send(Err(Error::SocketAckClosed)); }
-                    if let Some(ack) = ack { let _ = ack.send(Err(Error::SocketAckClosed)); }
+                    if let Some(sent) = sent {
+                        let _ = sent.send(Err(Error::SocketAckClosed));
+                    }
+                    if let Some(ack) = ack {
+                        let _ = ack.send(Err(Error::SocketAckClosed));
+                    }
                     return true;
                 }
                 (OutgoingPayload::Binary(bytes), None) => {
-                    let header = format!("451-[{},{{\"_placeholder\":true,\"num\":0}}]", json!(event));
-                    if socket.send(Message::Text(header)).await.is_err() || socket.send(Message::Binary(bytes.clone())).await.is_err() {
-                        if let Some(sent) = sent { let _ = sent.send(Err(Error::SocketAckClosed)); }
+                    let header =
+                        format!("451-[{},{{\"_placeholder\":true,\"num\":0}}]", json!(event));
+                    if socket.send(Message::Text(header)).await.is_err()
+                        || socket.send(Message::Binary(bytes.clone())).await.is_err()
+                    {
+                        if let Some(sent) = sent {
+                            let _ = sent.send(Err(Error::SocketAckClosed));
+                        }
                         return false;
                     }
-                    if let Some(sent) = sent { let _ = sent.send(Ok(())); }
+                    if let Some(sent) = sent {
+                        let _ = sent.send(Ok(()));
+                    }
                     return true;
                 }
             };
             if let Err(_) = socket.send(Message::Text(packet)).await {
-                if let Some(sent) = sent { let _ = sent.send(Err(Error::SocketAckClosed)); }
-                if let Some(ack) = ack { let _ = ack.send(Err(Error::SocketAckClosed)); }
+                if let Some(sent) = sent {
+                    let _ = sent.send(Err(Error::SocketAckClosed));
+                }
+                if let Some(ack) = ack {
+                    let _ = ack.send(Err(Error::SocketAckClosed));
+                }
                 return false;
             }
-            if let Some(sent) = sent { let _ = sent.send(Ok(())); }
-            if let (Some(id), Some(ack)) = (id, ack) { acknowledgements.push_back((id, ack)); }
+            if let Some(sent) = sent {
+                let _ = sent.send(Ok(()));
+            }
+            if let (Some(id), Some(ack)) = (id, ack) {
+                acknowledgements.push_back((id, ack));
+            }
             true
         }
     }
@@ -405,11 +453,20 @@ fn handle_ack(
     frame: &str,
     acknowledgements: &mut VecDeque<(u64, oneshot::Sender<Result<SocketPayload, Error>>)>,
 ) {
-    let Some(tail) = frame.strip_prefix("43") else { return; };
+    let Some(tail) = frame.strip_prefix("43") else {
+        return;
+    };
     let digit_count = tail.bytes().take_while(u8::is_ascii_digit).count();
-    let Ok(id) = tail[..digit_count].parse::<u64>() else { return; };
-    let Ok(values) = serde_json::from_str::<Vec<Value>>(&tail[digit_count..]) else { return; };
-    if let Some(index) = acknowledgements.iter().position(|(pending, _)| *pending == id) {
+    let Ok(id) = tail[..digit_count].parse::<u64>() else {
+        return;
+    };
+    let Ok(values) = serde_json::from_str::<Vec<Value>>(&tail[digit_count..]) else {
+        return;
+    };
+    if let Some(index) = acknowledgements
+        .iter()
+        .position(|(pending, _)| *pending == id)
+    {
         if let Some((_, sender)) = acknowledgements.remove(index) {
             let _ = sender.send(Ok(SocketPayload::Json(values)));
         }
@@ -417,17 +474,25 @@ fn handle_ack(
 }
 
 fn fail_acks(acks: VecDeque<(u64, oneshot::Sender<Result<SocketPayload, Error>>)>) {
-    for (_, sender) in acks { let _ = sender.send(Err(Error::SocketAckClosed)); }
+    for (_, sender) in acks {
+        let _ = sender.send(Err(Error::SocketAckClosed));
+    }
 }
 
 fn drain_pending(pending: &mut VecDeque<Command>) {
     while let Some(command) = pending.pop_front() {
         match command {
             Command::Emit { ack, sent, .. } => {
-                if let Some(sent) = sent { let _ = sent.send(Err(Error::SocketAckClosed)); }
-                if let Some(ack) = ack { let _ = ack.send(Err(Error::SocketAckClosed)); }
+                if let Some(sent) = sent {
+                    let _ = sent.send(Err(Error::SocketAckClosed));
+                }
+                if let Some(ack) = ack {
+                    let _ = ack.send(Err(Error::SocketAckClosed));
+                }
             }
-            Command::Disconnect(reply) => { let _ = reply.send(()); }
+            Command::Disconnect(reply) => {
+                let _ = reply.send(());
+            }
         }
     }
 }
@@ -435,10 +500,16 @@ fn drain_pending(pending: &mut VecDeque<Command>) {
 fn fail_command(command: Command) {
     match command {
         Command::Emit { ack, sent, .. } => {
-            if let Some(sent) = sent { let _ = sent.send(Err(Error::SocketAckClosed)); }
-            if let Some(ack) = ack { let _ = ack.send(Err(Error::SocketAckClosed)); }
+            if let Some(sent) = sent {
+                let _ = sent.send(Err(Error::SocketAckClosed));
+            }
+            if let Some(ack) = ack {
+                let _ = ack.send(Err(Error::SocketAckClosed));
+            }
         }
-        Command::Disconnect(reply) => { let _ = reply.send(()); }
+        Command::Disconnect(reply) => {
+            let _ = reply.send(());
+        }
     }
 }
 

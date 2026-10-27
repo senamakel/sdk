@@ -244,7 +244,8 @@ fn websocket_url(base_url: &str) -> String {
         "wss" | "ws" => url.scheme().to_owned(),
         _ => unreachable!("endpoint validation permits only HTTP(S)/WS(S)"),
     };
-    url.set_scheme(&scheme).expect("websocket schemes are compatible");
+    url.set_scheme(&scheme)
+        .expect("websocket schemes are compatible");
     let base_path = url.path().trim_end_matches('/');
     let path = if base_path.is_empty() {
         "/socket.io/".to_owned()
