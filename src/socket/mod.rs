@@ -85,6 +85,15 @@ pub struct SocketConnection {
     shutdown: watch::Sender<bool>,
 }
 
+/// Cloneable outbound handle for a [`SocketConnection`].
+///
+/// The event stream remains owned by [`SocketConnection`], so callers can
+/// receive inbound events while one or more emits wait for delivery or ACKs.
+#[derive(Clone)]
+pub struct SocketEmitter {
+    commands: mpsc::Sender<Command>,
+}
+
 #[cfg(test)]
 #[path = "mod_tests.rs"]
 mod tests;
@@ -140,6 +149,58 @@ impl SocketConnection {
         self.events.recv().await
     }
 
+    /// Emit any serializable JSON payload to any public backend socket event.
+    pub async fn emit<T: Serialize>(&self, event: &str, payload: &T) -> Result<(), Error> {
+        self.emitter().emit(event, payload).await
+    }
+
+    /// Emit a binary Socket.IO packet.
+    pub async fn emit_binary(&self, event: &str, bytes: Vec<u8>) -> Result<(), Error> {
+        self.emitter().emit_binary(event, bytes).await
+    }
+
+    /// Emit JSON and decode the server acknowledgement.
+    pub async fn emit_with_ack<T, R>(
+        &self,
+        event: &str,
+        payload: &T,
+        timeout: Duration,
+    ) -> Result<R, Error>
+    where
+        T: Serialize,
+        R: DeserializeOwned,
+    {
+        self.emitter().emit_with_ack(event, payload, timeout).await
+    }
+
+    /// Clone a handle that sends outbound packets without owning the event stream.
+    pub fn emitter(&self) -> SocketEmitter {
+        SocketEmitter {
+            commands: self.commands.clone(),
+        }
+    }
+
+    /// Stop reconnecting and close the connection intentionally.
+    ///
+    /// Pending emits and acknowledgement waiters are failed during teardown.
+    pub async fn disconnect(&self) -> Result<(), Error> {
+        self.shutdown.send_replace(true);
+        Ok(())
+    }
+
+    /// Whether the SDK's bounded reconnect loop is still active.
+    pub fn loop_active(&self) -> bool {
+        self.loop_active.load(Ordering::Acquire)
+    }
+
+    /// Whether the supervisor stopped after a terminal authentication or
+    /// endpoint-policy failure, or after exhausting its retry attempts.
+    pub fn stopped_on_failure(&self) -> bool {
+        self.stopped_on_failure.load(Ordering::Acquire)
+    }
+}
+
+impl SocketEmitter {
     /// Emit any serializable JSON payload to any public backend socket event.
     pub async fn emit<T: Serialize>(&self, event: &str, payload: &T) -> Result<(), Error> {
         let (sent, result) = oneshot::channel();
@@ -200,25 +261,6 @@ impl SocketConnection {
             .map_err(|_| Error::SocketAckTimeout)?
             .map_err(|_| Error::SocketAckClosed)?;
         payload?.decode(event)
-    }
-
-    /// Stop reconnecting and close the connection intentionally.
-    ///
-    /// Pending emits and acknowledgement waiters are failed during teardown.
-    pub async fn disconnect(&self) -> Result<(), Error> {
-        self.shutdown.send_replace(true);
-        Ok(())
-    }
-
-    /// Whether the SDK's bounded reconnect loop is still active.
-    pub fn loop_active(&self) -> bool {
-        self.loop_active.load(Ordering::Acquire)
-    }
-
-    /// Whether the supervisor stopped after a terminal authentication or
-    /// endpoint-policy failure, or after exhausting its retry attempts.
-    pub fn stopped_on_failure(&self) -> bool {
-        self.stopped_on_failure.load(Ordering::Acquire)
     }
 }
 

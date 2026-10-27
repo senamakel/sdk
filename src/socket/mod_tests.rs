@@ -1,4 +1,8 @@
 use super::*;
+use futures::{SinkExt, StreamExt};
+use serde_json::json;
+use tokio::net::TcpListener;
+use tokio_tungstenite::{accept_async, tungstenite::Message};
 
 #[test]
 fn endpoint_policy_allows_loopback_http_and_remote_tls() {
@@ -75,4 +79,78 @@ fn backend_url_is_converted_to_engine_io_websocket_endpoint() {
         websocket_url("http://127.0.0.1:7788"),
         "ws://127.0.0.1:7788/socket.io/?EIO=4&transport=websocket"
     );
+}
+
+#[tokio::test]
+async fn connect_event_exposes_socket_io_sid_and_emitter_drains_events_during_ack() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut socket = accept_async(stream).await.unwrap();
+        socket
+            .send(Message::Text(
+                r#"0{"sid":"engine-sid","pingInterval":60000,"pingTimeout":60000}"#.into(),
+            ))
+            .await
+            .unwrap();
+        let Some(Ok(Message::Text(auth))) = socket.next().await else {
+            panic!("expected Socket.IO auth packet");
+        };
+        assert!(auth.starts_with("40"));
+        socket
+            .send(Message::Text(r#"40{"sid":"socket-io-sid"}"#.into()))
+            .await
+            .unwrap();
+
+        let Some(Ok(Message::Text(emit))) = socket.next().await else {
+            panic!("expected acknowledgement emit");
+        };
+        let tail = emit.strip_prefix("42").unwrap();
+        let ack_id = tail.bytes().take_while(u8::is_ascii_digit).count();
+        let id = &tail[..ack_id];
+        for index in 0..257 {
+            socket
+                .send(Message::Text(
+                    format!("42{}", json!(["burst", index])).into(),
+                ))
+                .await
+                .unwrap();
+        }
+        socket
+            .send(Message::Text(format!("43{id}[{{\"ok\":true}}]").into()))
+            .await
+            .unwrap();
+    });
+
+    let mut connection = SocketConnection::connect(
+        format!("http://{address}"),
+        Arc::new(|| Some("token".to_owned())),
+    )
+    .await
+    .unwrap();
+    let _open = connection.next_event().await.unwrap();
+    let connected = connection.next_event().await.unwrap();
+    assert_eq!(connected.name, "connect");
+    assert_eq!(connected.decode::<Value>().unwrap()["sid"], "socket-io-sid");
+
+    let emitter = connection.emitter();
+    let ack = tokio::spawn(async move {
+        emitter
+            .emit_with_ack::<_, Value>("device:hello", &json!({"ok": true}), Duration::from_secs(3))
+            .await
+    });
+    let mut burst_events = 0;
+    while burst_events < 257 {
+        let event = tokio::time::timeout(Duration::from_secs(3), connection.next_event())
+            .await
+            .unwrap()
+            .unwrap();
+        if event.name == "burst" {
+            burst_events += 1;
+        }
+    }
+    assert_eq!(ack.await.unwrap().unwrap(), json!({"ok": true}));
+    connection.disconnect().await.unwrap();
+    server.await.unwrap();
 }
