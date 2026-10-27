@@ -47,7 +47,7 @@ async fn cross_origin_redirect_is_rejected_before_the_target_handshake() {
         connect_with_redirects_within(&mut endpoint, &mut shutdown_rx, Duration::from_secs(1))
             .await;
     assert!(
-        matches!(result, Err(ConnectFailure::Retryable(message)) if message.contains("redirect changed origin"))
+        matches!(result, Err(ConnectFailure::Policy(message)) if message.contains("redirect changed origin"))
     );
     assert!(
         tokio::time::timeout(Duration::from_millis(50), target.accept())
