@@ -140,6 +140,9 @@ pub(super) async fn run(
                 )
                 .await;
                 drain_pending(&mut pending);
+                if lost {
+                    drain_command_queue(&mut commands);
+                }
                 if !lost {
                     break;
                 }
@@ -599,6 +602,12 @@ fn drain_pending(pending: &mut VecDeque<Command>) {
                 }
             }
         }
+    }
+}
+
+fn drain_command_queue(commands: &mut mpsc::Receiver<Command>) {
+    while let Ok(command) = commands.try_recv() {
+        fail_command(command);
     }
 }
 

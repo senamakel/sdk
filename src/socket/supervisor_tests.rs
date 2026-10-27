@@ -67,3 +67,23 @@ fn socket_event_parser_preserves_all_json_arguments() {
         ))
     );
 }
+
+#[tokio::test]
+async fn teardown_drain_fails_queued_ack_waiters() {
+    let (commands, mut receiver) = mpsc::channel(1);
+    let (ack, result) = oneshot::channel();
+    commands
+        .send(Command::Emit {
+            event: "device:hello".to_owned(),
+            payload: OutgoingPayload::Json(json!({"ok": true})),
+            ack: Some(ack),
+            ack_timeout: Some(Duration::from_secs(1)),
+            sent: None,
+        })
+        .await
+        .unwrap();
+
+    drain_command_queue(&mut receiver);
+
+    assert!(matches!(result.await.unwrap(), Err(Error::SocketAckClosed)));
+}
