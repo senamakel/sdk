@@ -63,6 +63,9 @@ pub enum Error {
     #[error("socket connection or CONNECT acknowledgement timed out")]
     SocketConnectTimeout,
     #[cfg(feature = "socket")]
+    #[error("socket redirect changed origin; refusing to forward connection credentials")]
+    CrossOriginSocketRedirect,
+    #[cfg(feature = "socket")]
     #[error("socket event {0} did not carry a JSON payload")]
     UnexpectedSocketPayload(String),
     #[cfg(feature = "socket")]

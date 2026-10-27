@@ -355,3 +355,44 @@ fn validate_endpoint(endpoint: &str) -> Result<Url, Error> {
     }
     Ok(url)
 }
+
+fn websocket_url(base_url: &str) -> String {
+    let mut url = Url::parse(base_url).expect("validated socket endpoint URL");
+    let scheme = match url.scheme() {
+        "https" => "wss",
+        "http" => "ws",
+        "wss" | "ws" => url.scheme(),
+        _ => unreachable!("endpoint validation permits only HTTP(S)/WS(S)"),
+    };
+    url.set_scheme(scheme).expect("websocket schemes are compatible");
+    let base_path = url.path().trim_end_matches('/');
+    let path = if base_path.is_empty() {
+        "/socket.io/".to_owned()
+    } else {
+        format!("{base_path}/socket.io/")
+    };
+    url.set_path(&path);
+    url.set_query(Some("EIO=4&transport=websocket"));
+    url.to_string()
+}
+
+fn redirect_target(current: &str, location: &str) -> Result<String, Error> {
+    let current_url = Url::parse(current).map_err(|_| Error::UnsafeSocketEndpoint)?;
+    let mut target = current_url
+        .join(location)
+        .map_err(|_| Error::UnsafeSocketEndpoint)?;
+    let target_scheme = match target.scheme() {
+        "http" => "ws",
+        "https" => "wss",
+        "ws" | "wss" => target.scheme(),
+        _ => return Err(Error::UnsafeSocketEndpoint),
+    };
+    target
+        .set_scheme(target_scheme)
+        .map_err(|_| Error::UnsafeSocketEndpoint)?;
+    validate_endpoint(target.as_str())?;
+    if target.origin() != current_url.origin() {
+        return Err(Error::CrossOriginSocketRedirect);
+    }
+    Ok(target.to_string())
+}
