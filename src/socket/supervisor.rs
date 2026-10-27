@@ -117,14 +117,37 @@ pub(super) async fn run(
             }
         };
 
-        match socket_connect_ack(&mut socket, &token, &mut shutdown).await {
-            Ok(()) => {
+        match socket_connect_ack(&mut socket, &token, &mut shutdown, &events).await {
+            Ok(heartbeat) => {
                 let _ = events
                     .send(SocketEvent::new(
                         "connect",
                         SocketPayload::Json(vec![json!({})]),
                     ))
                     .await;
+                let lost = drive_ready_socket(
+                    &mut socket,
+                    &mut commands,
+                    &mut pending,
+                    &events,
+                    &mut shutdown,
+                    heartbeat,
+                )
+                .await;
+                drain_pending(&mut pending);
+                if !lost {
+                    break;
+                }
+                let _ = events
+                    .send(SocketEvent::new("close", SocketPayload::Json(vec![])))
+                    .await;
+                attempts = 0;
+                backoff = Duration::from_secs(1);
+                if sleep_or_disconnect(backoff, &mut commands, &mut pending, &mut shutdown).await {
+                    break;
+                }
+                backoff = (backoff * 2).min(MAX_BACKOFF);
+                continue;
             }
             Err(ConnectFailure::InvalidToken(message)) => {
                 stopped_on_failure.store(true, Ordering::Release);
@@ -150,27 +173,6 @@ pub(super) async fn run(
             }
         }
 
-        let lost = drive_ready_socket(
-            &mut socket,
-            &mut commands,
-            &mut pending,
-            &events,
-            &mut shutdown,
-        )
-        .await;
-        drain_pending(&mut pending);
-        if !lost {
-            break;
-        }
-        let _ = events
-            .send(SocketEvent::new("close", SocketPayload::Json(vec![])))
-            .await;
-        attempts = 0;
-        backoff = Duration::from_secs(1);
-        if sleep_or_disconnect(backoff, &mut commands, &mut pending, &mut shutdown).await {
-            break;
-        }
-        backoff = (backoff * 2).min(MAX_BACKOFF);
     }
 
     drain_pending(&mut pending);
@@ -249,7 +251,8 @@ async fn socket_connect_ack(
     socket: &mut SocketStream,
     token: &str,
     shutdown: &mut watch::Receiver<bool>,
-) -> Result<(), ConnectFailure> {
+    events: &mpsc::Sender<SocketEvent>,
+) -> Result<Duration, ConnectFailure> {
     let open = tokio::select! {
         _ = shutdown.changed() => return Err(ConnectFailure::Shutdown),
         open = timeout(CONNECT_TIMEOUT, socket.next()) => open,
@@ -267,6 +270,18 @@ async fn socket_connect_ack(
             "missing Engine.IO open packet".into(),
         ));
     }
+    let open_data = serde_json::from_str::<Value>(&open[1..]).unwrap_or(Value::Null);
+    let ping_interval = open_data
+        .get("pingInterval")
+        .and_then(Value::as_u64)
+        .unwrap_or(25_000);
+    let ping_timeout = open_data
+        .get("pingTimeout")
+        .and_then(Value::as_u64)
+        .unwrap_or(20_000);
+    let _ = events
+        .send(SocketEvent::new("open", SocketPayload::Json(vec![open_data])))
+        .await;
     let auth = serde_json::to_string(&json!({ "token": token }))
         .map_err(|error| ConnectFailure::Retryable(error.to_string()))?;
     socket
@@ -283,7 +298,9 @@ async fn socket_connect_ack(
         .ok_or_else(|| ConnectFailure::Retryable("closed before Socket.IO CONNECT ACK".into()))?
         .map_err(|error| ConnectFailure::Retryable(error.to_string()))?;
         match message {
-            Message::Text(frame) if frame.starts_with("40") => return Ok(()),
+            Message::Text(frame) if frame.starts_with("40") => {
+                return Ok(Duration::from_millis(ping_interval + ping_timeout + 5_000));
+            }
             Message::Text(frame) if frame.starts_with("44") => {
                 if is_invalid_token_text(&frame) {
                     return Err(ConnectFailure::InvalidToken(frame));
@@ -352,10 +369,12 @@ async fn drive_ready_socket(
     pending: &mut VecDeque<Command>,
     events: &mpsc::Sender<SocketEvent>,
     shutdown: &mut watch::Receiver<bool>,
+    heartbeat_timeout: Duration,
 ) -> bool {
     let mut ack_id = 0u64;
     let mut acknowledgements = VecDeque::<PendingAck>::new();
     let mut binary_event: Option<(String, usize)> = None;
+    let mut heartbeat_deadline = Instant::now() + heartbeat_timeout;
     loop {
         if let Some(command) = pending.pop_front() {
             if command_is_cancelled(&command) {
@@ -370,6 +389,7 @@ async fn drive_ready_socket(
         }
         tokio::select! {
             _ = shutdown.changed() => { fail_acks(acknowledgements); return false; }
+            _ = sleep_until(heartbeat_deadline) => { fail_acks(acknowledgements); return true; }
             _ = next_ack_deadline(&acknowledgements), if !acknowledgements.is_empty() => {
                 expire_acks(&mut acknowledgements);
             }
@@ -379,8 +399,9 @@ async fn drive_ready_socket(
             },
             message = socket.next() => match message {
                 Some(Ok(Message::Text(frame))) => {
-                    if frame == "2" {
-                        if socket.send(Message::Text("3".into())).await.is_err() { fail_acks(acknowledgements); return true; }
+                    if frame.starts_with('2') {
+                        heartbeat_deadline = Instant::now() + heartbeat_timeout;
+                        if socket.send(Message::Text(format!("3{}", &frame[1..]))).await.is_err() { fail_acks(acknowledgements); return true; }
                     } else if frame.starts_with("43") {
                         handle_ack(&frame, &mut acknowledgements);
                     } else if let Some(frame) = frame.strip_prefix("42") {
