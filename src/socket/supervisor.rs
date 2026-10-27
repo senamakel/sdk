@@ -13,6 +13,7 @@ use tokio::time::{sleep, timeout};
 use tokio_tungstenite::tungstenite::http::header::LOCATION;
 use tokio_tungstenite::tungstenite::http::StatusCode;
 use tokio_tungstenite::tungstenite::protocol::Message;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 
 use super::{
@@ -76,30 +77,19 @@ pub(super) async fn run(
         };
 
         let mut endpoint = websocket_url(&base_url);
-        let attempt = timeout(CONNECT_TIMEOUT, connect_with_redirects(&mut endpoint)).await;
-        let mut socket = match attempt {
-            Ok(Ok(socket)) => socket,
-            Ok(Err(ConnectFailure::InvalidToken(message))) => {
+        let mut socket = match connect_with_redirects(&mut endpoint).await {
+            Ok(socket) => socket,
+            Err(ConnectFailure::InvalidToken(message)) => {
                 stopped_on_failure.store(true, Ordering::Release);
                 send_error(&events, &message).await;
                 break;
             }
-            Ok(Err(ConnectFailure::Retryable(message))) => {
+            Err(ConnectFailure::Retryable(message)) => {
                 attempts = attempts.saturating_add(1);
                 send_error(&events, &message).await;
-                if attempts >= MAX_RECONNECT_ATTEMPTS {
-                    stopped_on_failure.store(true, Ordering::Release);
-                    break;
+                if attempts == 5 {
+                    send_escalation(&events, attempts).await;
                 }
-                if sleep_or_disconnect(backoff, &mut commands, &mut pending).await {
-                    break 'supervisor;
-                }
-                backoff = (backoff * 2).min(MAX_BACKOFF);
-                continue;
-            }
-            Err(_) => {
-                attempts = attempts.saturating_add(1);
-                send_error(&events, "socket connection timed out").await;
                 if attempts >= MAX_RECONNECT_ATTEMPTS {
                     stopped_on_failure.store(true, Ordering::Release);
                     break;
@@ -126,6 +116,9 @@ pub(super) async fn run(
             Err(ConnectFailure::Retryable(message)) => {
                 attempts = attempts.saturating_add(1);
                 send_error(&events, &message).await;
+                if attempts == 5 {
+                    send_escalation(&events, attempts).await;
+                }
                 if attempts >= MAX_RECONNECT_ATTEMPTS {
                     stopped_on_failure.store(true, Ordering::Release);
                     break;
@@ -164,7 +157,15 @@ pub(super) async fn run(
 async fn connect_with_redirects(url: &mut String) -> Result<SocketStream, ConnectFailure> {
     for hop in 0..=MAX_REDIRECT_HOPS {
         validate_endpoint(url).map_err(|error| ConnectFailure::Retryable(error.to_string()))?;
-        match timeout(CONNECT_TIMEOUT, connect_async(url.as_str())).await {
+        let mut request = url
+            .as_str()
+            .into_client_request()
+            .map_err(|error| ConnectFailure::Retryable(error.to_string()))?;
+        request.headers_mut().insert(
+            "x-sdk-client",
+            tokio_tungstenite::tungstenite::http::HeaderValue::from_static("tinyhumans-rust"),
+        );
+        match timeout(CONNECT_TIMEOUT, connect_async(request)).await {
             Err(_) => return Err(ConnectFailure::Retryable("websocket upgrade timed out".into())),
             Ok(Ok((socket, _))) => return Ok(socket),
             Ok(Err(tokio_tungstenite::tungstenite::Error::Http(response)))
@@ -290,6 +291,10 @@ async fn drive_ready_socket(
     let mut binary_event: Option<(String, usize)> = None;
     loop {
         if let Some(command) = pending.pop_front() {
+            if command_is_cancelled(&command) {
+                fail_command(command);
+                continue;
+            }
             if !send_command(socket, command, &mut ack_id, &mut acknowledgements).await {
                 fail_acks(acknowledgements);
                 return true;
@@ -437,11 +442,24 @@ fn fail_command(command: Command) {
     }
 }
 
+fn command_is_cancelled(command: &Command) -> bool {
+    matches!(command, Command::Emit { ack: Some(sender), .. } if sender.is_closed())
+}
+
 async fn send_error(events: &mpsc::Sender<SocketEvent>, message: &str) {
     let _ = events
         .send(SocketEvent::new(
             "error",
             SocketPayload::Json(vec![Value::String(message.to_owned())]),
+        ))
+        .await;
+}
+
+async fn send_escalation(events: &mpsc::Sender<SocketEvent>, attempts: u32) {
+    let _ = events
+        .send(SocketEvent::new(
+            "reconnect:escalated",
+            SocketPayload::Json(vec![json!({ "attempts": attempts })]),
         ))
         .await;
 }
