@@ -187,6 +187,7 @@ async fn reconnect_fetches_a_fresh_token_for_each_attempt() {
 async fn disconnect_during_connect_drains_queued_ack_emits() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
+    let (auth_tx, auth_rx) = oneshot::channel();
     let server = tokio::spawn(async move {
         let (stream, _) = listener.accept().await.unwrap();
         let mut socket = accept_async(stream).await.unwrap();
@@ -197,11 +198,13 @@ async fn disconnect_during_connect_drains_queued_ack_emits() {
         let Some(Ok(Message::Text(_auth))) = socket.next().await else {
             panic!("missing SIO CONNECT")
         };
+        auth_tx.send(()).unwrap();
         let _ = tokio::time::timeout(std::time::Duration::from_secs(2), socket.next()).await;
     });
     let client =
         TinyHumansClient::new(format!("http://{address}")).with_token(Some("access-token".into()));
     let connection = Arc::new(client.connect_socket().await.unwrap());
+    auth_rx.await.unwrap();
     let queued_connection = Arc::clone(&connection);
     let queued = tokio::spawn(async move {
         queued_connection
