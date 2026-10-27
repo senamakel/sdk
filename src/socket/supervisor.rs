@@ -217,7 +217,10 @@ pub(super) async fn run(
                     break;
                 }
                 let _ = events
-                    .send(SocketEvent::supervisor("close", SocketPayload::Json(vec![])))
+                    .send(SocketEvent::supervisor(
+                        "close",
+                        SocketPayload::Json(vec![]),
+                    ))
                     .await;
                 let delay = retry.connection_lost();
                 if sleep_or_disconnect(delay, &mut commands, &mut pending, &mut shutdown).await {

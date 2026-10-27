@@ -110,9 +110,10 @@ async fn connect_event_exposes_socket_io_sid_and_emitter_drains_events_during_ac
         let ack_id = tail.bytes().take_while(u8::is_ascii_digit).count();
         let id = &tail[..ack_id];
         socket
-            .send(Message::Text(
-                format!("42{}", json!(["error", {"msg": "backend failure"}])),
-            ))
+            .send(Message::Text(format!(
+                "42{}",
+                json!(["error", {"msg": "backend failure"}])
+            )))
             .await
             .unwrap();
         for index in 0..257 {
