@@ -195,9 +195,9 @@ async fn connect_with_redirects_within(
         };
         match result {
             Err(_) => {
-                return Err(ConnectFailure::Retryable(
-                    format!("websocket upgrade timed out after {hop_timeout:?}"),
-                ))
+                return Err(ConnectFailure::Retryable(format!(
+                    "websocket upgrade timed out after {hop_timeout:?}"
+                )))
             }
             Ok(Ok((socket, _))) => return Ok(socket),
             Ok(Err(tokio_tungstenite::tungstenite::Error::Http(response)))
