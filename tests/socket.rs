@@ -148,10 +148,18 @@ async fn reconnect_fetches_a_fresh_token_for_each_attempt() {
         for expected_token in ["token-0", "token-1"] {
             let (stream, _) = listener.accept().await.unwrap();
             let mut socket = accept_async(stream).await.unwrap();
-            socket.send(Message::Text(r#"0{"sid":"eio"}"#.into())).await.unwrap();
-            let Some(Ok(Message::Text(auth))) = socket.next().await else { panic!("missing SIO CONNECT") };
+            socket
+                .send(Message::Text(r#"0{"sid":"eio"}"#.into()))
+                .await
+                .unwrap();
+            let Some(Ok(Message::Text(auth))) = socket.next().await else {
+                panic!("missing SIO CONNECT")
+            };
             assert!(auth.contains(expected_token), "unexpected token in {auth}");
-            socket.send(Message::Text(r#"40{"sid":"sio"}"#.into())).await.unwrap();
+            socket
+                .send(Message::Text(r#"40{"sid":"sio"}"#.into()))
+                .await
+                .unwrap();
             if expected_token == "token-0" {
                 socket.close(None).await.unwrap();
             }
@@ -182,17 +190,26 @@ async fn disconnect_during_connect_drains_queued_ack_emits() {
     let server = tokio::spawn(async move {
         let (stream, _) = listener.accept().await.unwrap();
         let mut socket = accept_async(stream).await.unwrap();
-        socket.send(Message::Text(r#"0{"sid":"eio"}"#.into())).await.unwrap();
-        let Some(Ok(Message::Text(_auth))) = socket.next().await else { panic!("missing SIO CONNECT") };
+        socket
+            .send(Message::Text(r#"0{"sid":"eio"}"#.into()))
+            .await
+            .unwrap();
+        let Some(Ok(Message::Text(_auth))) = socket.next().await else {
+            panic!("missing SIO CONNECT")
+        };
         let _ = tokio::time::timeout(std::time::Duration::from_secs(2), socket.next()).await;
     });
-    let client = TinyHumansClient::new(format!("http://{address}"))
-        .with_token(Some("access-token".into()));
+    let client =
+        TinyHumansClient::new(format!("http://{address}")).with_token(Some("access-token".into()));
     let connection = Arc::new(client.connect_socket().await.unwrap());
     let queued_connection = Arc::clone(&connection);
     let queued = tokio::spawn(async move {
         queued_connection
-            .emit_with_ack::<_, serde_json::Value>("device:hello", &json!({"ok": true}), std::time::Duration::from_secs(3))
+            .emit_with_ack::<_, serde_json::Value>(
+                "device:hello",
+                &json!({"ok": true}),
+                std::time::Duration::from_secs(3),
+            )
             .await
     });
     tokio::task::yield_now().await;
