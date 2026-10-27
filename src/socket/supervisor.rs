@@ -9,7 +9,7 @@ use futures::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, oneshot, watch};
-use tokio::time::{sleep, sleep_until, timeout, Instant};
+use tokio::time::{sleep_until, timeout, Instant};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::header::LOCATION;
 use tokio_tungstenite::tungstenite::http::StatusCode;
