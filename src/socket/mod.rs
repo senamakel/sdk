@@ -215,7 +215,8 @@ impl SocketConnection {
         self.loop_active.load(Ordering::Acquire)
     }
 
-    /// Whether reconnecting stopped after a terminal token failure.
+    /// Whether the supervisor stopped after a terminal authentication or
+    /// endpoint-policy failure, or after exhausting its retry attempts.
     pub fn stopped_on_failure(&self) -> bool {
         self.stopped_on_failure.load(Ordering::Acquire)
     }
