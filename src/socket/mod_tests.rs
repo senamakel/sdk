@@ -23,3 +23,16 @@ fn endpoint_policy_rejects_remote_plaintext_and_unknown_schemes() {
         Err(Error::UnsafeSocketEndpoint)
     ));
 }
+
+#[test]
+fn invalid_token_detection_matches_terminal_connect_rejections_only() {
+    assert!(is_invalid_token_payload(&Payload::Text(vec![
+        serde_json::json!({"message": "Invalid token"})
+    ])));
+    assert!(is_invalid_token_payload(&Payload::Text(vec![
+        serde_json::json!("session token expired")
+    ])));
+    assert!(!is_invalid_token_payload(&Payload::Text(vec![
+        serde_json::json!({"message": "gateway unavailable"})
+    ])));
+}
