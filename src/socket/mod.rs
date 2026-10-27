@@ -14,7 +14,7 @@ use std::time::Duration;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::Value;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 use url::Url;
 
 use crate::Error;
@@ -76,6 +76,7 @@ pub struct SocketConnection {
     events: mpsc::Receiver<SocketEvent>,
     loop_active: Arc<AtomicBool>,
     stopped_on_failure: Arc<AtomicBool>,
+    shutdown: watch::Sender<bool>,
 }
 
 #[cfg(test)]
@@ -99,6 +100,7 @@ impl SocketConnection {
         let token = next_token(token_provider.as_ref()).ok_or(Error::MissingSocketToken)?;
         let (commands, command_rx) = mpsc::channel(128);
         let (event_tx, events) = mpsc::channel(256);
+        let (shutdown, shutdown_rx) = watch::channel(false);
         let loop_active = Arc::new(AtomicBool::new(false));
         let stopped_on_failure = Arc::new(AtomicBool::new(false));
         tokio::spawn(supervisor::run(
@@ -109,6 +111,7 @@ impl SocketConnection {
             event_tx,
             Arc::clone(&loop_active),
             Arc::clone(&stopped_on_failure),
+            shutdown_rx,
         ));
 
         Ok(Self {
@@ -116,6 +119,7 @@ impl SocketConnection {
             events,
             loop_active,
             stopped_on_failure,
+            shutdown,
         })
     }
 
@@ -188,10 +192,7 @@ impl SocketConnection {
 
     /// Close the connection intentionally.
     pub async fn disconnect(&self) -> Result<(), Error> {
-        let (sender, receiver) = oneshot::channel();
-        let _ = self.commands.send(Command::Disconnect(sender)).await;
-        let _ = tokio::time::timeout(Duration::from_secs(1), receiver).await;
-        self.loop_active.store(false, Ordering::Release);
+        self.shutdown.send_replace(true);
         Ok(())
     }
 

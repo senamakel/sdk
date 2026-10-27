@@ -8,7 +8,7 @@ use std::time::Duration;
 use futures::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 use tokio::net::TcpStream;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time::{sleep, timeout};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::header::LOCATION;
@@ -54,6 +54,7 @@ pub(super) async fn run(
     events: mpsc::Sender<SocketEvent>,
     loop_active: Arc<AtomicBool>,
     stopped_on_failure: Arc<AtomicBool>,
+    mut shutdown: watch::Receiver<bool>,
 ) {
     loop_active.store(true, Ordering::Release);
     stopped_on_failure.store(false, Ordering::Release);
@@ -64,7 +65,7 @@ pub(super) async fn run(
     let mut backoff = Duration::from_secs(1);
 
     'supervisor: loop {
-        if collect_commands(&mut commands, &mut pending) {
+        if *shutdown.borrow() || collect_commands(&mut commands, &mut pending) {
             break;
         }
         let Some(token) = token
@@ -77,8 +78,9 @@ pub(super) async fn run(
         };
 
         let mut endpoint = websocket_url(&base_url);
-        let mut socket = match connect_with_redirects(&mut endpoint).await {
+        let mut socket = match connect_with_redirects(&mut endpoint, &mut shutdown).await {
             Ok(socket) => socket,
+            Err(ConnectFailure::Shutdown) => break,
             Err(ConnectFailure::InvalidToken(message)) => {
                 stopped_on_failure.store(true, Ordering::Release);
                 send_error(&events, &message).await;
@@ -94,7 +96,7 @@ pub(super) async fn run(
                     stopped_on_failure.store(true, Ordering::Release);
                     break;
                 }
-                if sleep_or_disconnect(backoff, &mut commands, &mut pending).await {
+                if sleep_or_disconnect(backoff, &mut commands, &mut pending, &mut shutdown).await {
                     break 'supervisor;
                 }
                 backoff = (backoff * 2).min(MAX_BACKOFF);
@@ -102,7 +104,7 @@ pub(super) async fn run(
             }
         };
 
-        match socket_connect_ack(&mut socket, &token).await {
+        match socket_connect_ack(&mut socket, &token, &mut shutdown).await {
             Ok(()) => {
                 let _ = events
                     .send(SocketEvent::new(
@@ -116,6 +118,7 @@ pub(super) async fn run(
                 send_error(&events, &message).await;
                 break;
             }
+            Err(ConnectFailure::Shutdown) => break,
             Err(ConnectFailure::Retryable(message)) => {
                 attempts = attempts.saturating_add(1);
                 send_error(&events, &message).await;
@@ -126,7 +129,7 @@ pub(super) async fn run(
                     stopped_on_failure.store(true, Ordering::Release);
                     break;
                 }
-                if sleep_or_disconnect(backoff, &mut commands, &mut pending).await {
+                if sleep_or_disconnect(backoff, &mut commands, &mut pending, &mut shutdown).await {
                     break 'supervisor;
                 }
                 backoff = (backoff * 2).min(MAX_BACKOFF);
@@ -134,7 +137,14 @@ pub(super) async fn run(
             }
         }
 
-        let lost = drive_ready_socket(&mut socket, &mut commands, &mut pending, &events).await;
+        let lost = drive_ready_socket(
+            &mut socket,
+            &mut commands,
+            &mut pending,
+            &events,
+            &mut shutdown,
+        )
+        .await;
         drain_pending(&mut pending);
         if !lost {
             break;
@@ -144,7 +154,7 @@ pub(super) async fn run(
             .await;
         attempts = 0;
         backoff = Duration::from_secs(1);
-        if sleep_or_disconnect(backoff, &mut commands, &mut pending).await {
+        if sleep_or_disconnect(backoff, &mut commands, &mut pending, &mut shutdown).await {
             break;
         }
         backoff = (backoff * 2).min(MAX_BACKOFF);
@@ -157,7 +167,10 @@ pub(super) async fn run(
     loop_active.store(false, Ordering::Release);
 }
 
-async fn connect_with_redirects(url: &mut String) -> Result<SocketStream, ConnectFailure> {
+async fn connect_with_redirects(
+    url: &mut String,
+    shutdown: &mut watch::Receiver<bool>,
+) -> Result<SocketStream, ConnectFailure> {
     for hop in 0..=MAX_REDIRECT_HOPS {
         validate_endpoint(url).map_err(|error| ConnectFailure::Retryable(error.to_string()))?;
         let mut request = url
@@ -168,7 +181,11 @@ async fn connect_with_redirects(url: &mut String) -> Result<SocketStream, Connec
             "x-sdk-client",
             tokio_tungstenite::tungstenite::http::HeaderValue::from_static("tinyhumans-rust"),
         );
-        match timeout(CONNECT_TIMEOUT, connect_async(request)).await {
+        let result = tokio::select! {
+            _ = shutdown.changed() => return Err(ConnectFailure::Shutdown),
+            result = timeout(CONNECT_TIMEOUT, connect_async(request)) => result,
+        };
+        match result {
             Err(_) => {
                 return Err(ConnectFailure::Retryable(
                     "websocket upgrade timed out".into(),
@@ -203,8 +220,15 @@ fn is_redirect(status: StatusCode) -> bool {
     matches!(status.as_u16(), 301 | 302 | 307 | 308)
 }
 
-async fn socket_connect_ack(socket: &mut SocketStream, token: &str) -> Result<(), ConnectFailure> {
-    let open = timeout(CONNECT_TIMEOUT, socket.next())
+async fn socket_connect_ack(
+    socket: &mut SocketStream,
+    token: &str,
+    shutdown: &mut watch::Receiver<bool>,
+) -> Result<(), ConnectFailure> {
+    let open = tokio::select! {
+        _ = shutdown.changed() => return Err(ConnectFailure::Shutdown),
+        open = timeout(CONNECT_TIMEOUT, socket.next()) => open,
+    }
         .await
         .map_err(|_| ConnectFailure::Retryable("Engine.IO open timed out".into()))?
         .ok_or_else(|| ConnectFailure::Retryable("closed before Engine.IO open".into()))?
