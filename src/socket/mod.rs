@@ -108,8 +108,7 @@ impl SocketConnection {
         token_provider: Arc<dyn Fn() -> Option<String> + Send + Sync>,
     ) -> Result<Self, Error> {
         validate_endpoint(&base_url)?;
-        let token = token_provider().filter(|token| !token.trim().is_empty())
-            .ok_or(Error::MissingSocketToken)?;
+        let token = next_token(token_provider.as_ref()).ok_or(Error::MissingSocketToken)?;
         let (sender, events) = mpsc::unbounded_channel();
 
         let any_sender = sender.clone();
@@ -181,7 +180,7 @@ impl SocketConnection {
                 let stopped = Arc::clone(&reconnect_stopped);
                 async move {
                     let mut settings = ReconnectSettings::new();
-                    match provider().filter(|token| !token.trim().is_empty()) {
+                    match next_token(provider.as_ref()) {
                         Some(token) => settings.auth(serde_json::json!({ "token": token })),
                         None => {
                             stopped.store(true, Ordering::Release);
@@ -312,6 +311,10 @@ fn is_invalid_token_payload(payload: &Payload) -> bool {
     };
     let message = message.to_ascii_lowercase();
     message.contains("invalid token") || message.contains("token expired")
+}
+
+fn next_token(provider: &(dyn Fn() -> Option<String> + Send + Sync)) -> Option<String> {
+    provider().filter(|token| !token.trim().is_empty())
 }
 
 fn validate_endpoint(endpoint: &str) -> Result<Url, Error> {
