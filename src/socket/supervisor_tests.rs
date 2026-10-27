@@ -1,5 +1,6 @@
 use super::*;
 use tokio::io::AsyncReadExt;
+use tokio::net::TcpListener;
 
 #[tokio::test]
 async fn every_websocket_redirect_hop_has_its_own_connect_deadline() {
