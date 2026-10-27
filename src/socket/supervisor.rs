@@ -217,7 +217,7 @@ pub(super) async fn run(
                     break;
                 }
                 let _ = events
-                    .send(SocketEvent::new("close", SocketPayload::Json(vec![])))
+                    .send(SocketEvent::supervisor("close", SocketPayload::Json(vec![])))
                     .await;
                 let delay = retry.connection_lost();
                 if sleep_or_disconnect(delay, &mut commands, &mut pending, &mut shutdown).await {
@@ -364,7 +364,7 @@ async fn socket_connect_ack(
         .and_then(Value::as_u64)
         .unwrap_or(20_000);
     let _ = events
-        .send(SocketEvent::new(
+        .send(SocketEvent::supervisor(
             "open",
             SocketPayload::Json(vec![open_data]),
         ))
@@ -391,7 +391,7 @@ async fn socket_connect_ack(
                     .and_then(|payload| serde_json::from_str::<Value>(payload).ok())
                     .unwrap_or(Value::Null);
                 let _ = events
-                    .send(SocketEvent::new(
+                    .send(SocketEvent::supervisor(
                         "connect",
                         SocketPayload::Json(vec![socket_namespace]),
                     ))
@@ -515,7 +515,7 @@ async fn drive_ready_socket(
                         fail_acks(acknowledgements);
                         return true;
                     } else if frame.starts_with("44") {
-                        let _ = events.send(SocketEvent::new("error", SocketPayload::Json(vec![Value::String(frame)]))).await;
+                        let _ = events.send(SocketEvent::supervisor("error", SocketPayload::Json(vec![Value::String(frame)]))).await;
                         fail_acks(acknowledgements);
                         return true;
                     }
@@ -711,7 +711,7 @@ fn command_is_cancelled(command: &Command) -> bool {
 
 async fn send_error(events: &mpsc::Sender<SocketEvent>, message: &str) {
     let _ = events
-        .send(SocketEvent::new(
+        .send(SocketEvent::supervisor(
             "error",
             SocketPayload::Json(vec![Value::String(message.to_owned())]),
         ))
@@ -720,7 +720,7 @@ async fn send_error(events: &mpsc::Sender<SocketEvent>, message: &str) {
 
 async fn send_escalation(events: &mpsc::Sender<SocketEvent>, attempts: u32) {
     let _ = events
-        .send(SocketEvent::new(
+        .send(SocketEvent::supervisor(
             "reconnect:escalated",
             SocketPayload::Json(vec![json!({ "attempts": attempts })]),
         ))

@@ -51,8 +51,20 @@ impl SocketPayload {
 }
 
 /// One incoming Socket.IO event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SocketEventSource {
+    /// An event received by name from the backend Socket.IO namespace.
+    Backend,
+    /// A lifecycle or transport event synthesized by the SDK supervisor.
+    Supervisor,
+}
+
+/// One incoming Socket.IO event.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SocketEvent {
+    /// Identifies whether the event came from the backend namespace or the
+    /// SDK's connection supervisor.
+    pub source: SocketEventSource,
     pub name: String,
     pub payload: SocketPayload,
 }
@@ -61,6 +73,16 @@ impl SocketEvent {
     /// Construct an event. Useful when forwarding or testing event decoders.
     pub fn new(name: impl Into<String>, payload: SocketPayload) -> Self {
         Self {
+            source: SocketEventSource::Backend,
+            name: name.into(),
+            payload,
+        }
+    }
+
+    /// Construct an SDK supervisor lifecycle or transport event.
+    pub fn supervisor(name: impl Into<String>, payload: SocketPayload) -> Self {
+        Self {
+            source: SocketEventSource::Supervisor,
             name: name.into(),
             payload,
         }
