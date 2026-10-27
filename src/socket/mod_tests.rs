@@ -36,3 +36,16 @@ fn invalid_token_detection_matches_terminal_connect_rejections_only() {
         serde_json::json!({"message": "gateway unavailable"})
     ])));
 }
+
+#[test]
+fn token_provider_is_queried_for_each_connection_attempt() {
+    let attempts = std::sync::atomic::AtomicUsize::new(0);
+    let provider = || {
+        let attempt = attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Some(format!("token-{attempt}"))
+    };
+
+    assert_eq!(next_token(&provider).as_deref(), Some("token-0"));
+    assert_eq!(next_token(&provider).as_deref(), Some("token-1"));
+    assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 2);
+}
