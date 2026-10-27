@@ -49,3 +49,31 @@ fn token_provider_is_queried_for_each_connection_attempt() {
     assert_eq!(next_token(&provider).as_deref(), Some("token-1"));
     assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 2);
 }
+
+#[test]
+fn redirect_policy_follows_same_origin_and_rejects_cross_origin_credentials() {
+    assert_eq!(
+        redirect_target("wss://api.example.test/socket.io/?EIO=4", "/edge/socket.io/?EIO=4")
+            .unwrap(),
+        "wss://api.example.test/edge/socket.io/?EIO=4"
+    );
+    assert!(matches!(
+        redirect_target(
+            "wss://api.example.test/socket.io/?EIO=4",
+            "wss://other.example.test/socket.io/?EIO=4"
+        ),
+        Err(Error::CrossOriginSocketRedirect)
+    ));
+}
+
+#[test]
+fn backend_url_is_converted_to_engine_io_websocket_endpoint() {
+    assert_eq!(
+        websocket_url("https://api.example.test/base/"),
+        "wss://api.example.test/base/socket.io/?EIO=4&transport=websocket"
+    );
+    assert_eq!(
+        websocket_url("http://127.0.0.1:7788"),
+        "ws://127.0.0.1:7788/socket.io/?EIO=4&transport=websocket"
+    );
+}
