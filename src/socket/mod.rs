@@ -139,6 +139,7 @@ impl SocketConnection {
                 event: event.to_owned(),
                 payload: OutgoingPayload::Json(serde_json::to_value(payload)?),
                 ack: None,
+                ack_timeout: None,
                 sent: Some(sent),
             })
             .await
@@ -154,6 +155,7 @@ impl SocketConnection {
                 event: event.to_owned(),
                 payload: OutgoingPayload::Binary(bytes),
                 ack: None,
+                ack_timeout: None,
                 sent: Some(sent),
             })
             .await
@@ -178,6 +180,7 @@ impl SocketConnection {
                 event: event.to_owned(),
                 payload: OutgoingPayload::Json(serde_json::to_value(payload)?),
                 ack: Some(sender),
+                ack_timeout: Some(timeout),
                 sent: None,
             })
             .await

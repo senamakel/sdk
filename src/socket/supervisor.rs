@@ -9,7 +9,7 @@ use futures::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, oneshot, watch};
-use tokio::time::{sleep, timeout};
+use tokio::time::{sleep, sleep_until, timeout, Instant};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::header::LOCATION;
 use tokio_tungstenite::tungstenite::http::StatusCode;
@@ -36,6 +36,7 @@ pub(super) enum Command {
         event: String,
         payload: OutgoingPayload,
         ack: Option<oneshot::Sender<Result<SocketPayload, Error>>>,
+        ack_timeout: Option<Duration>,
         sent: Option<oneshot::Sender<Result<(), Error>>>,
     },
 }
@@ -329,7 +330,7 @@ async fn drive_ready_socket(
 ) -> bool {
     let mut ack_id = 0u64;
     let mut acknowledgements =
-        VecDeque::<(u64, oneshot::Sender<Result<SocketPayload, Error>>)>::new();
+        VecDeque::<(u64, Instant, oneshot::Sender<Result<SocketPayload, Error>>)>::new();
     let mut binary_event: Option<(String, usize)> = None;
     loop {
         if let Some(command) = pending.pop_front() {
@@ -345,6 +346,9 @@ async fn drive_ready_socket(
         }
         tokio::select! {
             _ = shutdown.changed() => { fail_acks(acknowledgements); return false; }
+            _ = next_ack_deadline(&acknowledgements), if !acknowledgements.is_empty() => {
+                expire_acks(&mut acknowledgements);
+            }
             command = commands.recv() => match command {
                 Some(command) => pending.push_back(command),
                 None => { fail_acks(acknowledgements); return false; }
@@ -387,13 +391,14 @@ async fn send_command(
     socket: &mut SocketStream,
     command: Command,
     ack_id: &mut u64,
-    acknowledgements: &mut VecDeque<(u64, oneshot::Sender<Result<SocketPayload, Error>>)>,
+    acknowledgements: &mut VecDeque<(u64, Instant, oneshot::Sender<Result<SocketPayload, Error>>)>,
 ) -> bool {
     match command {
         Command::Emit {
             event,
             payload,
             ack,
+            ack_timeout,
             sent,
         } => {
             let id = ack.as_ref().map(|_| {
@@ -444,7 +449,11 @@ async fn send_command(
                 let _ = sent.send(Ok(()));
             }
             if let (Some(id), Some(ack)) = (id, ack) {
-                acknowledgements.push_back((id, ack));
+                acknowledgements.push_back((
+                    id,
+                    Instant::now() + ack_timeout.unwrap_or(CONNECT_TIMEOUT),
+                    ack,
+                ));
             }
             true
         }
@@ -466,7 +475,7 @@ fn parse_binary_event(packet: &str) -> Option<(String, usize)> {
 
 fn handle_ack(
     frame: &str,
-    acknowledgements: &mut VecDeque<(u64, oneshot::Sender<Result<SocketPayload, Error>>)>,
+    acknowledgements: &mut VecDeque<(u64, Instant, oneshot::Sender<Result<SocketPayload, Error>>)>,
 ) {
     let Some(tail) = frame.strip_prefix("43") else {
         return;
@@ -480,17 +489,46 @@ fn handle_ack(
     };
     if let Some(index) = acknowledgements
         .iter()
-        .position(|(pending, _)| *pending == id)
+        .position(|(pending, _, _)| *pending == id)
     {
-        if let Some((_, sender)) = acknowledgements.remove(index) {
+        if let Some((_, _, sender)) = acknowledgements.remove(index) {
             let _ = sender.send(Ok(SocketPayload::Json(values)));
         }
     }
 }
 
-fn fail_acks(acks: VecDeque<(u64, oneshot::Sender<Result<SocketPayload, Error>>)>) {
-    for (_, sender) in acks {
+fn fail_acks(acks: VecDeque<(u64, Instant, oneshot::Sender<Result<SocketPayload, Error>>)>) {
+    for (_, _, sender) in acks {
         let _ = sender.send(Err(Error::SocketAckClosed));
+    }
+}
+
+async fn next_ack_deadline(
+    acknowledgements: &VecDeque<(u64, Instant, oneshot::Sender<Result<SocketPayload, Error>>)>,
+) {
+    let deadline = acknowledgements
+        .iter()
+        .map(|(_, deadline, _)| *deadline)
+        .min()
+        .unwrap_or_else(|| Instant::now() + CONNECT_TIMEOUT);
+    sleep_until(deadline).await;
+}
+
+fn expire_acks(
+    acknowledgements: &mut VecDeque<(u64, Instant, oneshot::Sender<Result<SocketPayload, Error>>)>,
+) {
+    let now = Instant::now();
+    let mut index = 0;
+    while index < acknowledgements.len() {
+        if acknowledgements[index].1 <= now {
+            if let Some((_, _, sender)) = acknowledgements.remove(index) {
+                let _ = sender.send(Err(Error::SocketAckTimeout));
+            }
+        } else if acknowledgements[index].2.is_closed() {
+            acknowledgements.remove(index);
+        } else {
+            index += 1;
+        }
     }
 }
 
