@@ -232,7 +232,8 @@ impl TinyHumansClient {
     #[cfg(feature = "socket")]
     pub async fn connect_socket(&self) -> Result<socket::SocketConnection, Error> {
         let token = self.http.token.clone().ok_or(Error::MissingSocketToken)?;
-        self.connect_socket_with_token_provider(move || Some(token.clone())).await
+        self.connect_socket_with_token_provider(move || Some(token.clone()))
+            .await
     }
 
     /// Connect with a token provider that is called for the initial connection

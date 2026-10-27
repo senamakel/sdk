@@ -125,92 +125,101 @@ impl SocketConnection {
         let (ready_tx, ready_rx) = oneshot::channel();
         let ready_tx = Arc::new(Mutex::new(Some(ready_tx)));
         let ready_callback_tx = Arc::clone(&ready_tx);
-        let client = tokio::time::timeout(Duration::from_secs(10), ClientBuilder::new(base_url)
-            .auth(serde_json::json!({ "token": token }))
-            .opening_header("x-sdk-client", "tinyhumans-rust")
-            .on_any(move |event, payload, _| {
-                let sender = any_sender.clone();
-                async move {
-                    let _ = sender.send(SocketEvent::new(
-                        event.to_string(),
-                        SocketPayload::from_socket_io(payload),
-                    ));
-                }
-                .boxed()
-            })
-            .on("open", move |payload, _| {
-                let sender = open_sender.clone();
-                async move {
-                    let _ = sender.send(SocketEvent::new(
-                        "open",
-                        SocketPayload::from_socket_io(payload),
-                    ));
-                }
-                .boxed()
-            })
-            .on("close", move |payload, _| {
-                let sender = close_sender.clone();
-                async move {
-                    let _ = sender.send(SocketEvent::new(
-                        "close",
-                        SocketPayload::from_socket_io(payload),
-                    ));
-                }
-                .boxed()
-            })
-            .on("error", move |payload, client| {
-                let sender = error_sender.clone();
-                let stopped = Arc::clone(&error_stopped);
-                let active = Arc::clone(&error_active);
-                async move {
-                    if is_invalid_token_payload(&payload) {
-                        stopped.store(true, Ordering::Release);
-                        active.store(false, Ordering::Release);
-                        let _ = client.disconnect().await;
+        let client = tokio::time::timeout(
+            Duration::from_secs(10),
+            ClientBuilder::new(base_url)
+                .auth(serde_json::json!({ "token": token }))
+                .opening_header("x-sdk-client", "tinyhumans-rust")
+                .on_any(move |event, payload, _| {
+                    let sender = any_sender.clone();
+                    async move {
+                        let _ = sender.send(SocketEvent::new(
+                            event.to_string(),
+                            SocketPayload::from_socket_io(payload),
+                        ));
                     }
-                    let _ = sender.send(SocketEvent::new(
-                        "error",
-                        SocketPayload::from_socket_io(payload),
-                    ));
-                }
-                .boxed()
-            })
-            .on_reconnect(move || {
-                let provider = Arc::clone(&reconnect_provider);
-                let stopped = Arc::clone(&reconnect_stopped);
-                async move {
-                    let mut settings = ReconnectSettings::new();
-                    match next_token(provider.as_ref()) {
-                        Some(token) => settings.auth(serde_json::json!({ "token": token })),
-                        None => {
+                    .boxed()
+                })
+                .on("open", move |payload, _| {
+                    let sender = open_sender.clone();
+                    async move {
+                        let _ = sender.send(SocketEvent::new(
+                            "open",
+                            SocketPayload::from_socket_io(payload),
+                        ));
+                    }
+                    .boxed()
+                })
+                .on("close", move |payload, _| {
+                    let sender = close_sender.clone();
+                    async move {
+                        let _ = sender.send(SocketEvent::new(
+                            "close",
+                            SocketPayload::from_socket_io(payload),
+                        ));
+                    }
+                    .boxed()
+                })
+                .on("error", move |payload, client| {
+                    let sender = error_sender.clone();
+                    let stopped = Arc::clone(&error_stopped);
+                    let active = Arc::clone(&error_active);
+                    async move {
+                        if is_invalid_token_payload(&payload) {
                             stopped.store(true, Ordering::Release);
-                            // An empty credential forces the backend to reject
-                            // the attempt; the error callback then closes the
-                            // retry loop instead of reusing stale auth.
-                            settings.auth(serde_json::json!({ "token": "" }));
+                            active.store(false, Ordering::Release);
+                            let _ = client.disconnect().await;
                         }
+                        let _ = sender.send(SocketEvent::new(
+                            "error",
+                            SocketPayload::from_socket_io(payload),
+                        ));
                     }
-                    settings
-                }
-                .boxed()
-            })
-            .reconnect(true)
-            .reconnect_delay(1_000, 30_000)
-            .max_reconnect_attempts(10)
-            .on("connect", move |payload, _| {
-                if let Some(ready) = ready_callback_tx.lock().expect("ready sender poisoned").take() {
-                    let _ = ready.send(());
-                }
-                let sender = connect_sender.clone();
-                async move {
-                    let _ = sender.send(SocketEvent::new(
-                        "connect",
-                        SocketPayload::from_socket_io(payload),
-                    ));
-                }
-                .boxed()
-            })
-            .connect()).await.map_err(|_| Error::SocketConnectTimeout)??;
+                    .boxed()
+                })
+                .on_reconnect(move || {
+                    let provider = Arc::clone(&reconnect_provider);
+                    let stopped = Arc::clone(&reconnect_stopped);
+                    async move {
+                        let mut settings = ReconnectSettings::new();
+                        match next_token(provider.as_ref()) {
+                            Some(token) => settings.auth(serde_json::json!({ "token": token })),
+                            None => {
+                                stopped.store(true, Ordering::Release);
+                                // An empty credential forces the backend to reject
+                                // the attempt; the error callback then closes the
+                                // retry loop instead of reusing stale auth.
+                                settings.auth(serde_json::json!({ "token": "" }));
+                            }
+                        }
+                        settings
+                    }
+                    .boxed()
+                })
+                .reconnect(true)
+                .reconnect_delay(1_000, 30_000)
+                .max_reconnect_attempts(10)
+                .on("connect", move |payload, _| {
+                    if let Some(ready) = ready_callback_tx
+                        .lock()
+                        .expect("ready sender poisoned")
+                        .take()
+                    {
+                        let _ = ready.send(());
+                    }
+                    let sender = connect_sender.clone();
+                    async move {
+                        let _ = sender.send(SocketEvent::new(
+                            "connect",
+                            SocketPayload::from_socket_io(payload),
+                        ));
+                    }
+                    .boxed()
+                })
+                .connect(),
+        )
+        .await
+        .map_err(|_| Error::SocketConnectTimeout)??;
 
         // The builder returns as soon as it writes the CONNECT packet. Wait for
         // the server's CONNECT ACK before exposing this connection to callers.
@@ -220,7 +229,12 @@ impl SocketConnection {
             .map_err(|_| Error::SocketAckClosed)?;
         loop_active.store(true, Ordering::Release);
 
-        Ok(Self { client, events, loop_active, stopped_on_failure })
+        Ok(Self {
+            client,
+            events,
+            loop_active,
+            stopped_on_failure,
+        })
     }
 
     /// Wait for the next incoming event.
@@ -304,7 +318,11 @@ impl SocketConnection {
 
 fn is_invalid_token_payload(payload: &Payload) -> bool {
     let message = match payload {
-        Payload::Text(values) => values.iter().map(Value::to_string).collect::<Vec<_>>().join(" "),
+        Payload::Text(values) => values
+            .iter()
+            .map(Value::to_string)
+            .collect::<Vec<_>>()
+            .join(" "),
         Payload::Binary(bytes) => String::from_utf8_lossy(bytes).into_owned(),
         #[allow(deprecated)]
         Payload::String(text) => text.clone(),
@@ -337,4 +355,3 @@ fn validate_endpoint(endpoint: &str) -> Result<Url, Error> {
     }
     Ok(url)
 }
-
