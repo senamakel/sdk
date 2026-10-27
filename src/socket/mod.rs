@@ -21,7 +21,7 @@ use url::Url;
 
 use crate::Error;
 mod supervisor;
-use supervisor::{Command, OutgoingPayload, Settings, TokenProvider};
+use supervisor::{Command, OutgoingPayload, RetryConfig, Settings, TokenProvider};
 
 pub mod events;
 
@@ -116,6 +116,7 @@ impl SocketConnection {
                 token_provider: Arc::clone(&token_provider),
                 loop_active: Arc::clone(&loop_active),
                 stopped_on_failure: Arc::clone(&stopped_on_failure),
+                retry: RetryConfig::default(),
             },
             command_rx,
             event_tx,

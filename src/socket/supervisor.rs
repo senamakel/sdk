@@ -180,19 +180,20 @@ pub(super) async fn run(
                 break;
             }
             Err(ConnectFailure::Retryable(message)) => {
-                attempts = attempts.saturating_add(1);
+                let decision = retry.failed_attempt();
                 send_error(&events, &message).await;
-                if attempts == 5 {
-                    send_escalation(&events, attempts).await;
+                if decision.escalate {
+                    send_escalation(&events, retry.attempts).await;
                 }
-                if attempts >= MAX_RECONNECT_ATTEMPTS {
+                if decision.exhausted {
                     stopped_on_failure.store(true, Ordering::Release);
                     break;
                 }
-                if sleep_or_disconnect(backoff, &mut commands, &mut pending, &mut shutdown).await {
+                if sleep_or_disconnect(decision.delay, &mut commands, &mut pending, &mut shutdown)
+                    .await
+                {
                     break 'supervisor;
                 }
-                backoff = (backoff * 2).min(MAX_BACKOFF);
                 continue;
             }
         };
@@ -224,12 +225,10 @@ pub(super) async fn run(
                 let _ = events
                     .send(SocketEvent::new("close", SocketPayload::Json(vec![])))
                     .await;
-                attempts = 0;
-                backoff = Duration::from_secs(1);
-                if sleep_or_disconnect(backoff, &mut commands, &mut pending, &mut shutdown).await {
+                let delay = retry.connection_lost();
+                if sleep_or_disconnect(delay, &mut commands, &mut pending, &mut shutdown).await {
                     break;
                 }
-                backoff = (backoff * 2).min(MAX_BACKOFF);
                 continue;
             }
             Err(ConnectFailure::InvalidToken(message)) => {
@@ -244,19 +243,20 @@ pub(super) async fn run(
             }
             Err(ConnectFailure::Shutdown) => break,
             Err(ConnectFailure::Retryable(message)) => {
-                attempts = attempts.saturating_add(1);
+                let decision = retry.failed_attempt();
                 send_error(&events, &message).await;
-                if attempts == 5 {
-                    send_escalation(&events, attempts).await;
+                if decision.escalate {
+                    send_escalation(&events, retry.attempts).await;
                 }
-                if attempts >= MAX_RECONNECT_ATTEMPTS {
+                if decision.exhausted {
                     stopped_on_failure.store(true, Ordering::Release);
                     break;
                 }
-                if sleep_or_disconnect(backoff, &mut commands, &mut pending, &mut shutdown).await {
+                if sleep_or_disconnect(decision.delay, &mut commands, &mut pending, &mut shutdown)
+                    .await
+                {
                     break 'supervisor;
                 }
-                backoff = (backoff * 2).min(MAX_BACKOFF);
                 continue;
             }
         }
