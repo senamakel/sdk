@@ -31,5 +31,5 @@ tokio-tungstenite = { version = "0.21", features = ["rustls-tls-webpki-roots"], 
 tokio = { version = "1", features = ["sync", "time", "net", "rt", "macros"] }
 
 [dev-dependencies]
-tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "net", "io-util"] }
+tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "net", "io-util", "test-util"] }
 wiremock = "0.6"

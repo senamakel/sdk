@@ -87,3 +87,41 @@ async fn teardown_drain_fails_queued_ack_waiters() {
 
     assert!(matches!(result.await.unwrap(), Err(Error::SocketAckClosed)));
 }
+
+#[tokio::test(start_paused = true)]
+async fn queued_emits_do_not_shorten_the_reconnect_backoff() {
+    let (commands, mut command_rx) = mpsc::channel(4);
+    let (shutdown, mut shutdown_rx) = watch::channel(false);
+    let mut pending = VecDeque::new();
+    let retry = tokio::spawn(async move {
+        let stopped = sleep_or_disconnect(
+            Duration::from_secs(10),
+            &mut command_rx,
+            &mut pending,
+            &mut shutdown_rx,
+        )
+        .await;
+        (stopped, pending)
+    });
+
+    tokio::task::yield_now().await;
+    tokio::time::advance(Duration::from_secs(5)).await;
+    commands
+        .send(Command::Emit {
+            event: "device:hello".to_owned(),
+            payload: OutgoingPayload::Json(json!({"ok": true})),
+            ack: None,
+            ack_timeout: None,
+            sent: None,
+        })
+        .await
+        .unwrap();
+    tokio::task::yield_now().await;
+
+    assert!(!retry.is_finished(), "an emit must not end the retry delay");
+    tokio::time::advance(Duration::from_secs(5)).await;
+    let (stopped, pending) = retry.await.unwrap();
+    assert!(!stopped);
+    assert_eq!(pending.len(), 1);
+    drop(shutdown);
+}
