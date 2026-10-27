@@ -38,7 +38,6 @@ pub(super) enum Command {
         ack: Option<oneshot::Sender<Result<SocketPayload, Error>>>,
         sent: Option<oneshot::Sender<Result<(), Error>>>,
     },
-    Disconnect(oneshot::Sender<()>),
 }
 
 pub(super) enum OutgoingPayload {
@@ -229,9 +228,9 @@ async fn socket_connect_ack(
         _ = shutdown.changed() => return Err(ConnectFailure::Shutdown),
         open = timeout(CONNECT_TIMEOUT, socket.next()) => open,
     }
-        .map_err(|_| ConnectFailure::Retryable("Engine.IO open timed out".into()))?
-        .ok_or_else(|| ConnectFailure::Retryable("closed before Engine.IO open".into()))?
-        .map_err(|error| ConnectFailure::Retryable(error.to_string()))?;
+    .map_err(|_| ConnectFailure::Retryable("Engine.IO open timed out".into()))?
+    .ok_or_else(|| ConnectFailure::Retryable("closed before Engine.IO open".into()))?
+    .map_err(|error| ConnectFailure::Retryable(error.to_string()))?;
     let Message::Text(open) = open else {
         return Err(ConnectFailure::Retryable(
             "invalid Engine.IO open packet".into(),
@@ -254,9 +253,9 @@ async fn socket_connect_ack(
             _ = shutdown.changed() => return Err(ConnectFailure::Shutdown),
             message = timeout(CONNECT_TIMEOUT, socket.next()) => message,
         }
-            .map_err(|_| ConnectFailure::Retryable("Socket.IO CONNECT ACK timed out".into()))?
-            .ok_or_else(|| ConnectFailure::Retryable("closed before Socket.IO CONNECT ACK".into()))?
-            .map_err(|error| ConnectFailure::Retryable(error.to_string()))?;
+        .map_err(|_| ConnectFailure::Retryable("Socket.IO CONNECT ACK timed out".into()))?
+        .ok_or_else(|| ConnectFailure::Retryable("closed before Socket.IO CONNECT ACK".into()))?
+        .map_err(|error| ConnectFailure::Retryable(error.to_string()))?;
         match message {
             Message::Text(frame) if frame.starts_with("40") => return Ok(()),
             Message::Text(frame) if frame.starts_with("44") => {
@@ -297,10 +296,6 @@ fn collect_commands(
 ) -> bool {
     loop {
         match commands.try_recv() {
-            Ok(Command::Disconnect(reply)) => {
-                let _ = reply.send(());
-                return true;
-            }
             Ok(command) if pending.len() < EMIT_QUEUE_CAPACITY => pending.push_back(command),
             Ok(command) => fail_command(command),
             Err(_) => return false,
@@ -318,7 +313,6 @@ async fn sleep_or_disconnect(
         _ = shutdown.changed() => true,
         _ = sleep(duration) => false,
         command = commands.recv() => match command {
-            Some(Command::Disconnect(reply)) => { let _ = reply.send(()); true }
             Some(command) if pending.len() < EMIT_QUEUE_CAPACITY => { pending.push_back(command); false }
             Some(command) => { fail_command(command); false }
             None => true,
@@ -352,11 +346,6 @@ async fn drive_ready_socket(
         tokio::select! {
             _ = shutdown.changed() => { fail_acks(acknowledgements); return false; }
             command = commands.recv() => match command {
-                Some(Command::Disconnect(reply)) => {
-                    let _ = reply.send(());
-                    fail_acks(acknowledgements);
-                    return false;
-                }
                 Some(command) => pending.push_back(command),
                 None => { fail_acks(acknowledgements); return false; }
             },
@@ -401,10 +390,6 @@ async fn send_command(
     acknowledgements: &mut VecDeque<(u64, oneshot::Sender<Result<SocketPayload, Error>>)>,
 ) -> bool {
     match command {
-        Command::Disconnect(reply) => {
-            let _ = reply.send(());
-            false
-        }
         Command::Emit {
             event,
             payload,
@@ -520,9 +505,6 @@ fn drain_pending(pending: &mut VecDeque<Command>) {
                     let _ = ack.send(Err(Error::SocketAckClosed));
                 }
             }
-            Command::Disconnect(reply) => {
-                let _ = reply.send(());
-            }
         }
     }
 }
@@ -536,9 +518,6 @@ fn fail_command(command: Command) {
             if let Some(ack) = ack {
                 let _ = ack.send(Err(Error::SocketAckClosed));
             }
-        }
-        Command::Disconnect(reply) => {
-            let _ = reply.send(());
         }
     }
 }
