@@ -172,7 +172,6 @@ pub(super) async fn run(
                 continue;
             }
         }
-
     }
 
     drain_pending(&mut pending);
@@ -280,7 +279,10 @@ async fn socket_connect_ack(
         .and_then(Value::as_u64)
         .unwrap_or(20_000);
     let _ = events
-        .send(SocketEvent::new("open", SocketPayload::Json(vec![open_data])))
+        .send(SocketEvent::new(
+            "open",
+            SocketPayload::Json(vec![open_data]),
+        ))
         .await;
     let auth = serde_json::to_string(&json!({ "token": token }))
         .map_err(|error| ConnectFailure::Retryable(error.to_string()))?;
