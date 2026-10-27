@@ -129,16 +129,32 @@ impl SocketConnection {
 
     /// Emit any serializable JSON payload to any public backend socket event.
     pub async fn emit<T: Serialize>(&self, event: &str, payload: &T) -> Result<(), Error> {
-        self.client
-            .emit(event, serde_json::to_value(payload)?)
-            .await?;
-        Ok(())
+        let (sent, result) = oneshot::channel();
+        self.commands
+            .send(Command::Emit {
+                event: event.to_owned(),
+                payload: OutgoingPayload::Json(serde_json::to_value(payload)?),
+                ack: None,
+                sent: Some(sent),
+            })
+            .await
+            .map_err(|_| Error::SocketAckClosed)?;
+        result.await.map_err(|_| Error::SocketAckClosed)?
     }
 
     /// Emit a binary Socket.IO packet.
     pub async fn emit_binary(&self, event: &str, bytes: Vec<u8>) -> Result<(), Error> {
-        self.client.emit(event, bytes).await?;
-        Ok(())
+        let (sent, result) = oneshot::channel();
+        self.commands
+            .send(Command::Emit {
+                event: event.to_owned(),
+                payload: OutgoingPayload::Binary(bytes),
+                ack: None,
+                sent: Some(sent),
+            })
+            .await
+            .map_err(|_| Error::SocketAckClosed)?;
+        result.await.map_err(|_| Error::SocketAckClosed)?
     }
 
     /// Emit JSON and decode the server acknowledgement.
@@ -153,25 +169,15 @@ impl SocketConnection {
         R: DeserializeOwned,
     {
         let (sender, receiver) = oneshot::channel();
-        let sender = Arc::new(Mutex::new(Some(sender)));
-        let callback_sender = Arc::clone(&sender);
-
-        self.client
-            .emit_with_ack(
-                event,
-                serde_json::to_value(payload)?,
-                timeout,
-                move |payload, _| {
-                    let sender = Arc::clone(&callback_sender);
-                    async move {
-                        if let Some(sender) = sender.lock().expect("ack sender poisoned").take() {
-                            let _ = sender.send(SocketPayload::from_socket_io(payload));
-                        }
-                    }
-                    .boxed()
-                },
-            )
-            .await?;
+        self.commands
+            .send(Command::Emit {
+                event: event.to_owned(),
+                payload: OutgoingPayload::Json(serde_json::to_value(payload)?),
+                ack: Some(sender),
+                sent: None,
+            })
+            .await
+            .map_err(|_| Error::SocketAckClosed)?;
 
         let payload = tokio::time::timeout(timeout, receiver)
             .await
@@ -182,8 +188,10 @@ impl SocketConnection {
 
     /// Close the connection intentionally.
     pub async fn disconnect(&self) -> Result<(), Error> {
+        let (sender, receiver) = oneshot::channel();
+        let _ = self.commands.send(Command::Disconnect(sender)).await;
+        let _ = tokio::time::timeout(Duration::from_secs(1), receiver).await;
         self.loop_active.store(false, Ordering::Release);
-        self.client.disconnect().await?;
         Ok(())
     }
 
@@ -198,23 +206,13 @@ impl SocketConnection {
     }
 }
 
-fn is_invalid_token_payload(payload: &Payload) -> bool {
-    let message = match payload {
-        Payload::Text(values) => values
-            .iter()
-            .map(Value::to_string)
-            .collect::<Vec<_>>()
-            .join(" "),
-        Payload::Binary(bytes) => String::from_utf8_lossy(bytes).into_owned(),
-        #[allow(deprecated)]
-        Payload::String(text) => text.clone(),
-    };
-    let message = message.to_ascii_lowercase();
-    message.contains("invalid token") || message.contains("token expired")
-}
-
 fn next_token(provider: &(dyn Fn() -> Option<String> + Send + Sync)) -> Option<String> {
     provider().filter(|token| !token.trim().is_empty())
+}
+
+fn is_invalid_token_text(text: &str) -> bool {
+    let text = text.to_ascii_lowercase();
+    text.contains("invalid token") || text.contains("token expired")
 }
 
 fn validate_endpoint(endpoint: &str) -> Result<Url, Error> {

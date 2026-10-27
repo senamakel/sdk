@@ -15,7 +15,10 @@ use tokio_tungstenite::tungstenite::http::StatusCode;
 use tokio_tungstenite::tungstenite::protocol::Message;
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 
-use super::{redirect_target, validate_endpoint, websocket_url, SocketEvent, SocketPayload};
+use super::{
+    is_invalid_token_text, redirect_target, validate_endpoint, websocket_url, SocketEvent,
+    SocketPayload,
+};
 use crate::Error;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -241,11 +244,6 @@ async fn socket_connect_ack(socket: &mut SocketStream, token: &str) -> Result<()
             _ => {}
         }
     }
-}
-
-fn is_invalid_token_text(text: &str) -> bool {
-    let text = text.to_ascii_lowercase();
-    text.contains("invalid token") || text.contains("token expired")
 }
 
 enum ConnectFailure {

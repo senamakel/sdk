@@ -51,9 +51,6 @@ pub enum Error {
     #[error("response decoding failed: {0}")]
     Decode(#[from] serde_json::Error),
     #[cfg(feature = "socket")]
-    #[error("socket.io transport failed: {0}")]
-    Socket(Box<rust_socketio::Error>),
-    #[cfg(feature = "socket")]
     #[error("a bearer token is required for socket.io connections")]
     MissingSocketToken,
     #[cfg(feature = "socket")]
