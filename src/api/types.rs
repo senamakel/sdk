@@ -163,32 +163,3 @@ pub struct CreateTeamInviteRequest {
 pub struct EmailInviteRequest {
     pub email: String,
 }
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct JoinMeetingRequest {
-    pub meet_url: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub mascot_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub agent_name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub display_name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub platform: Option<MeetingPlatform>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub system_prompt: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub muted: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub rive_colors: Option<Value>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum MeetingPlatform {
-    Gmeet,
-    Zoom,
-    Teams,
-    Webex,
-}

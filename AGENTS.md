@@ -30,7 +30,7 @@ agent-integration platform. The SDK should expose these API families cleanly:
   view over the caller's personal team — see the backend's `docs/TEAMS_REMOVAL.md`)
   and `/payments/*`.
 - Agent integrations under `/agent-integrations/*` for Composio, Parallel,
-  media generation, financial APIs, maps, Tenor, Twilio, crypto, and
+  media generation, financial APIs, maps, Tenor, crypto, and
   the direct OpenRouter proxy.
 - Telegram/Discord channel integration routes under `/channels/*`.
 - Feedback, invites, referrals, rewards, announcements, mascots, and
@@ -166,3 +166,25 @@ block. `UNEXPOSED_ROUTES.len()` is pinned in `src/lib.rs` to catch exactly that.
   `test:`, `refactor:`, or `chore:`.
 - Keep Rust client, tests, generated route registry, and docs in the same
   contract change.
+
+## Tests live in `*_tests.rs` files
+
+- Unit tests are never inline. Do not write a `#[cfg(test)] mod tests { ... }`
+  block in a source file. Put the tests in a sibling `<module>_tests.rs`
+  (`mod_tests.rs` beside a `mod.rs`, `lib_tests.rs` beside `lib.rs`) and declare
+  it at the bottom of the module:
+
+  ```rust
+  #[cfg(test)]
+  #[path = "foo_tests.rs"]
+  mod tests;
+  ```
+
+- The test file starts with `use super::*;` and carries no `#[cfg(test)]` of its
+  own. It is still a child module, so it reaches private items exactly as an
+  inline module did.
+- Name test files `<module>_tests.rs`; a second group for the same module is
+  `<module>_<topic>_tests.rs`. Never `test.rs`, `tests.rs` or `<module>_test.rs`.
+- Integration tests stay in the crate's `tests/` directory.
+- OpenHuman's `scripts/externalize-inline-tests.mjs <repo-root> --write` moves
+  inline test modules out mechanically; without `--write` it only reports.

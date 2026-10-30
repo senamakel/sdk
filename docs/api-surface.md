@@ -31,7 +31,7 @@ namespace.
 | `health` | `/` | none | `check()` liveness |
 | `auth` | `/auth` | bearer | email login, OAuth, `me()`, integration tokens |
 | `inference` | `/openai` | bearer | `GET /v1/models`, chat completions, responses, transcription |
-| `agentIntegrations` | `/agent-integrations` | bearer | Composio, Parallel, media generation, maps, Twilio, crypto, OpenRouter |
+| `agentIntegrations` | `/agent-integrations` | bearer | Composio, Parallel, media generation, maps, Tenor, crypto, OpenRouter |
 | `apiKeys` | `/api-keys` | bearer | create, list, and revoke user API keys |
 | `budgets` | `/budgets` | bearer | team budgets and seat allocations |
 | `openCompany` | `/opencompany` | bearer | company instances, lifecycle, and custom domains |
@@ -39,8 +39,8 @@ namespace.
 | `feedback` | `/feedback` | bearer | create, ingest, list, detail, vote, and comments |
 | `teams` | `/teams` | bearer | personal-team detail, usage, and billing; membership/invite routes are retired (`410`) |
 | `channels` | `/channels` | bearer | messages, reactions, typing, threads |
-| `mascots` | `/mascots` | mixed | catalog, render streams, meetings, Rive assets |
-| `memory` | `/memory` | bearer | write experiences, recall, answer, events, facts/beliefs/understanding, derivation status, blobs, forget, scopes (billed per call) |
+| `mascots` | `/mascots` | mixed | catalog, manifests, demo page, Rive assets |
+| `memory` | `/memory` | bearer | write experiences, recall, answer, events, facts/beliefs/understanding, derivation status, blobs, forget, scopes (billed per call), free period (whether memory is free right now) |
 | `announcements` | `/announcements` | bearer | latest active announcement |
 | `coupons` | `/coupons` | bearer | redemption and coupon history |
 | `invite` | `/invite` | mixed | invite status, redemption, and owned codes |
@@ -68,6 +68,13 @@ Most JSON responses use the hosted-backend envelope:
 
 SDK request helpers unwrap this envelope by default. The raw helper can return the
 full response body when callers need status metadata or non-standard payloads.
+
+Multipart callers can use `post_multipart_with_response_limit(path, form, max_bytes)`
+to bound the response body while it is read. Responses exceeding the budget return
+`Error::ResponseTooLarge` before JSON parsing. Failed responses redact echoes of
+the client's configured bearer token and API key, including nested values and
+object keys; successful payloads remain unchanged. The existing `post_multipart`
+helper retains its previous behavior.
 
 ## Gemini
 
@@ -113,6 +120,49 @@ Live billing notes:
 
 The crate has no raw WebSocket client dependency, so the relay connection is
 left to the caller's WebSocket library of choice.
+
+## Sarvam
+
+`agent_integrations::sarvam` covers Sarvam AI's Indic speech and chat models.
+Request fields follow Sarvam's own API (`snake_case`). Speech is billed at
+Sarvam's list price (₹30 per hour of audio, ₹30 per 10,000 characters) plus the
+integration margin, and chat is billed at cost.
+
+- `sarvam_speech_to_text(file_name, bytes, &SarvamSpeechToTextOptions)` uploads
+  up to 30 seconds of audio (`saaras:v4` by default; `mode: "translate"` returns
+  English). The response is Sarvam's transcript plus `duration_seconds` (measured
+  from the file, billed in whole seconds) and `cost_usd`.
+- `sarvam_text_to_speech(&SarvamTextToSpeechRequest)` returns base64 `audios`
+  (`bulbul:v3` by default, 11 languages) plus the `characters` billed and
+  `cost_usd`.
+- `sarvam_chat_completion(&body)` posts an OpenAI-shaped chat completion for
+  `sarvam-105b` or `sarvam-105b-conversations`. `sarvam-105b` reasons by default
+  and bills hidden reasoning tokens as output; send `"reasoning_effort": null` to
+  turn that off. `stream: true` is rejected, as on the OpenRouter methods.
+- `sarvam_create_live_session(&SarvamLiveSessionRequest)` opens a metered
+  streaming session: `Transcribe` (streaming speech-to-text) or `Speech`
+  (streaming text-to-speech). Connect a plain WebSocket to `ws_url` within 60
+  seconds and speak Sarvam's streaming protocol: `audio_input` events with
+  base64 PCM in the `encoding` and `sample_rate` set on the `Transcribe` request
+  (default 16 kHz `linear16`), `text`/`flush` messages
+  for `Speech`. The configuration is fixed at mint time and client `config`
+  frames are dropped. Close codes are exported as `SARVAM_LIVE_CLOSE_*` and
+  match Gemini Live's; the relay also closes with `1000` after Sarvam's
+  `session.end`.
+- `SarvamLiveSessionRequest::Agent(SarvamLiveAgent { app_id, .. })` opens a
+  Sarvam Voice Agents conversation with an agent authored in Sarvam's dashboard
+  and allow-listed by the backend. Send `client.media.audio_chunk` frames
+  (`audio_base64`: 16-bit mono PCM at `input_sample_rate`) and answer every
+  `server.system.ping` with a `client.system.pong` carrying its `event_id`. It is
+  billed per second from `server.action.interaction_connected` to close, and the
+  backend refuses it (503) until an operator configures the per-minute price.
+- `sarvam_live_session(id)` returns a session's status, charged amount and
+  usage totals (`audio_seconds`, `characters`, `agent_seconds`).
+
+Streaming billing: transcription bills every second of audio sent once Sarvam
+accepts the session, so a session Sarvam rejects at connect costs nothing.
+Speech bills characters as Sarvam returns audio for them, and each `text`
+message may carry at most 2,500 characters (longer ones are dropped).
 
 ## OpenRouter media generation
 

@@ -8,12 +8,12 @@
     "url": "https://api.tinyhumans.ai/swagger.json",
     "title": "TinyHumans API",
     "version": "1.0.0",
-    "pathCount": 264,
-    "totalOperationCount": 295,
-    "operationCount": 240,
+    "pathCount": 224,
+    "totalOperationCount": 244,
+    "operationCount": 256,
     "supplementalOperationCount": 13,
-    "excludedAdminOperationCount": 47,
-    "excludedWebhookOperationCount": 12,
+    "excludedAdminOperationCount": 52,
+    "excludedWebhookOperationCount": 13,
     "servers": [
       "https://api.tinyhumans.ai/",
       "https://staging-api.tinyhumans.ai/",
@@ -34,7 +34,7 @@
       "name": "agentIntegrations",
       "basePath": "/agent-integrations",
       "auth": "mixed",
-      "operationCount": 91,
+      "operationCount": 90,
       "tags": [
         "Agent Integrations",
         "OpenHuman parity"
@@ -77,9 +77,7 @@
         "GET /agent-integrations/parallel/research/{runId}",
         "GET /agent-integrations/parallel/research/{runId}/result",
         "GET /agent-integrations/pricing",
-        "GET /agent-integrations/recall-calendar/meetings",
-        "GET /agent-integrations/recall-calendar/oauth-complete",
-        "GET /agent-integrations/recall-calendar/status",
+        "GET /agent-integrations/sarvam/live/sessions/{sessionId}",
         "PATCH /agent-integrations/file-storage/files/{fileId}",
         "POST /agent-integrations/composio/authorize",
         "POST /agent-integrations/composio/execute",
@@ -124,13 +122,14 @@
         "POST /agent-integrations/parallel/extract",
         "POST /agent-integrations/parallel/research",
         "POST /agent-integrations/parallel/search",
-        "POST /agent-integrations/recall-calendar/connect",
-        "POST /agent-integrations/recall-calendar/disconnect",
+        "POST /agent-integrations/sarvam/chat/completions",
+        "POST /agent-integrations/sarvam/live/sessions",
+        "POST /agent-integrations/sarvam/speech-to-text",
+        "POST /agent-integrations/sarvam/text-to-speech",
         "POST /agent-integrations/tenor/search",
         "POST /agent-integrations/tinyfish/agent/run",
         "POST /agent-integrations/tinyfish/fetch",
-        "POST /agent-integrations/tinyfish/search",
-        "POST /agent-integrations/twilio/call"
+        "POST /agent-integrations/tinyfish/search"
       ]
     },
     {
@@ -280,12 +279,13 @@
       "name": "inference",
       "basePath": "/openai",
       "auth": "bearer",
-      "operationCount": 6,
+      "operationCount": 7,
       "tags": [
         "Inference"
       ],
       "routes": [
         "GET /openai/v1/models",
+        "GET /openai/v1/threads/{threadId}/usage",
         "POST /openai/v1/audio/speech",
         "POST /openai/v1/audio/transcriptions",
         "POST /openai/v1/chat/completions",
@@ -310,29 +310,28 @@
     {
       "name": "mascots",
       "basePath": "/mascots",
-      "auth": "mixed",
-      "operationCount": 6,
+      "auth": "none",
+      "operationCount": 4,
       "tags": [
         "Mascots"
       ],
       "routes": [
         "GET /mascots",
         "GET /mascots/demo",
-        "GET /mascots/meetings",
         "GET /mascots/{id}",
-        "GET /mascots/{id}/riv",
-        "POST /mascots/join-meeting"
+        "GET /mascots/{id}/riv"
       ]
     },
     {
       "name": "memory",
       "basePath": "/memory",
       "auth": "bearer",
-      "operationCount": 14,
+      "operationCount": 28,
       "tags": [
         "Memory"
       ],
       "routes": [
+        "DELETE /memory",
         "DELETE /memory/blobs/{id}",
         "GET /memory/beliefs",
         "GET /memory/blobs/{id}",
@@ -340,20 +339,33 @@
         "GET /memory/events",
         "GET /memory/events/{id}",
         "GET /memory/facts",
+        "GET /memory/free-period",
         "GET /memory/scopes",
         "GET /memory/understanding",
+        "GET /memory/v1/beliefs",
+        "GET /memory/v1/erasures/{id}",
+        "GET /memory/v1/events",
+        "GET /memory/v1/events/{id}",
+        "GET /memory/v1/scopes/list",
         "POST /memory/answer",
         "POST /memory/blobs",
         "POST /memory/experience",
         "POST /memory/forget",
-        "POST /memory/recall"
+        "POST /memory/recall",
+        "POST /memory/v1/answer",
+        "POST /memory/v1/beliefs/build",
+        "POST /memory/v1/erasures",
+        "POST /memory/v1/experience",
+        "POST /memory/v1/experience/bulk",
+        "POST /memory/v1/forget",
+        "POST /memory/v1/recall"
       ]
     },
     {
       "name": "openCompany",
       "basePath": "/opencompany",
       "auth": "bearer",
-      "operationCount": 11,
+      "operationCount": 15,
       "tags": [
         "OpenCompany"
       ],
@@ -363,12 +375,16 @@
         "GET /opencompany/companies",
         "GET /opencompany/instances",
         "GET /opencompany/instances/usage",
+        "GET /opencompany/instances/{slug}/password",
         "POST /opencompany/instances",
         "POST /opencompany/instances/{slug}/custom-domain/verify",
+        "POST /opencompany/instances/{slug}/open",
+        "POST /opencompany/instances/{slug}/password/reset",
         "POST /opencompany/instances/{slug}/resume",
         "POST /opencompany/instances/{slug}/suspend",
         "POST /opencompany/instances/{slug}/update",
-        "PUT /opencompany/instances/{slug}/custom-domain"
+        "PUT /opencompany/instances/{slug}/custom-domain",
+        "PUT /opencompany/instances/{slug}/password"
       ]
     },
     {
@@ -477,6 +493,7 @@
       "auth": "bearer",
       "operationCount": 17,
       "tags": [
+        "OpenHuman parity",
         "Teams"
       ],
       "routes": [
@@ -548,7 +565,7 @@
       "auth": "bearer",
       "operationCount": 6,
       "tags": [
-        "Webhooks"
+        "OpenHuman parity"
       ],
       "routes": [
         "DELETE /webhooks/core/{id}",

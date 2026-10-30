@@ -1,9 +1,9 @@
-//! Mascots: library, manifests, Rive assets, the interactive demo, and meeting dispatch.
+//! Mascots: library, manifests, Rive assets, and the interactive demo.
 
 use reqwest::Method;
 
-use super::types::{DynamicResponse, JoinMeetingRequest};
-use crate::{enc, Error, HttpClient, QueryParam};
+use super::types::DynamicResponse;
+use crate::{enc, Error, HttpClient};
 
 /// Typed client for the `/mascots/*` routes.
 pub struct MascotsApi<'a> {
@@ -26,30 +26,6 @@ impl<'a> MascotsApi<'a> {
     pub async fn get_demo(&self) -> Result<DynamicResponse, Error> {
         self.http
             .send_typed(Method::GET, "/mascots/demo", &[], None, true)
-            .await
-    }
-
-    /// Send the mascot bot into a live meeting.
-    pub async fn join_meeting(
-        &self,
-        request: &JoinMeetingRequest,
-    ) -> Result<DynamicResponse, Error> {
-        let body = serde_json::to_value(request).expect("join meeting request is serializable");
-        self.http
-            .send_typed(
-                Method::POST,
-                "/mascots/join-meeting",
-                &[],
-                Some(&body),
-                true,
-            )
-            .await
-    }
-
-    /// List the authenticated user's mascot-bot meeting history.
-    pub async fn list_meetings(&self, query: &[QueryParam]) -> Result<DynamicResponse, Error> {
-        self.http
-            .send_typed(Method::GET, "/mascots/meetings", query, None, true)
             .await
     }
 

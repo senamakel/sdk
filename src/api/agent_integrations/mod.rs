@@ -24,10 +24,9 @@ pub mod openrouter;
 pub mod openrouter_media;
 pub mod parallel;
 pub mod pricing;
-pub mod recall_calendar;
+pub mod sarvam;
 pub mod tenor;
 pub mod tinyfish;
-pub mod twilio;
 
 pub use composio::*;
 pub use crypto::*;
@@ -41,10 +40,9 @@ pub use openrouter::*;
 pub use openrouter_media::*;
 pub use parallel::*;
 pub use pricing::*;
-pub use recall_calendar::*;
+pub use sarvam::*;
 pub use tenor::*;
 pub use tinyfish::*;
-pub use twilio::*;
 
 /// Typed client for the `/agent-integrations/*` routes.
 pub struct AgentIntegrationsApi<'a> {

@@ -15,7 +15,6 @@ pub use super::agent_integrations::media_generation::*;
 pub use super::agent_integrations::openrouter_media::*;
 pub use super::agent_integrations::parallel::*;
 pub use super::agent_integrations::pricing::*;
-pub use super::agent_integrations::recall_calendar::*;
+pub use super::agent_integrations::sarvam::*;
 pub use super::agent_integrations::tenor::*;
 pub use super::agent_integrations::tinyfish::*;
-pub use super::agent_integrations::twilio::*;

@@ -27,6 +27,39 @@ async fn file_download_returns_binary_bytes() {
 }
 
 #[tokio::test]
+async fn file_link_can_ask_for_an_inline_disposition() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/agent-integrations/file-storage/files/file_1/link"))
+        .and(body_json(json!({"expiresInSeconds": 300, "disposition": "inline"})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "success": true,
+            "data": {"url": "https://s3.example/f", "expiresAt": "2030-01-01T00:00:00.000Z", "costUsd": 0.0}
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/agent-integrations/file-storage/files/file_2/link"))
+        .and(body_json(json!({})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "success": true, "data": {"url": "https://s3.example/g", "costUsd": 0.0}
+        })))
+        .mount(&server)
+        .await;
+
+    let client = TinyHumansClient::new(server.uri());
+    let api = client.agent_integrations();
+    let inline = api
+        .create_file_link_with_disposition("file_1", Some(300), "inline")
+        .await
+        .unwrap();
+    assert_eq!(inline.url, "https://s3.example/f");
+    // The plain call sends no disposition, as before.
+    let plain = api.create_file_link("file_2", None).await.unwrap();
+    assert_eq!(plain.url, "https://s3.example/g");
+}
+
+#[tokio::test]
 async fn list_composio_github_repos_is_typed() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
@@ -966,119 +999,6 @@ async fn get_pricing_returns_data() {
     let _ = result;
 }
 
-// --- Recall Calendar ---
-
-#[tokio::test]
-async fn connect_recall_calendar_posts() {
-    let server = MockServer::start().await;
-    Mock::given(method("POST"))
-        .and(path("/agent-integrations/recall-calendar/connect"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_json(json!({"success": true, "data": {"url": "https://x"}})),
-        )
-        .mount(&server)
-        .await;
-
-    let client = TinyHumansClient::new(server.uri());
-    let result = client
-        .agent_integrations()
-        .connect_recall_calendar()
-        .await
-        .unwrap();
-
-    let _ = result;
-}
-
-#[tokio::test]
-async fn disconnect_recall_calendar_posts() {
-    let server = MockServer::start().await;
-    Mock::given(method("POST"))
-        .and(path("/agent-integrations/recall-calendar/disconnect"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_json(json!({"success": true, "data": {"disconnected": true}})),
-        )
-        .mount(&server)
-        .await;
-
-    let client = TinyHumansClient::new(server.uri());
-    let result = client
-        .agent_integrations()
-        .disconnect_recall_calendar()
-        .await
-        .unwrap();
-
-    let _ = result;
-}
-
-#[tokio::test]
-async fn list_recall_calendar_meetings_gets() {
-    let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/agent-integrations/recall-calendar/meetings"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_json(json!({"success": true, "data": {"meetings": []}})),
-        )
-        .mount(&server)
-        .await;
-
-    let client = TinyHumansClient::new(server.uri());
-    let result = client
-        .agent_integrations()
-        .list_recall_calendar_meetings()
-        .await
-        .unwrap();
-
-    let _ = result;
-}
-
-#[tokio::test]
-async fn recall_calendar_oauth_complete_gets_query() {
-    let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/agent-integrations/recall-calendar/oauth-complete"))
-        .and(query_param("code", "code_1"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_json(json!({"success": true, "data": {"ok": true}})),
-        )
-        .mount(&server)
-        .await;
-
-    let client = TinyHumansClient::new(server.uri());
-    let result = client
-        .agent_integrations()
-        .recall_calendar_oauth_complete(&[("code", Some("code_1".to_string()))])
-        .await
-        .unwrap();
-
-    let _ = result;
-}
-
-#[tokio::test]
-async fn get_recall_calendar_status_gets() {
-    let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/agent-integrations/recall-calendar/status"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_json(json!({"success": true, "data": {"connected": false}})),
-        )
-        .mount(&server)
-        .await;
-
-    let client = TinyHumansClient::new(server.uri());
-    let result = client
-        .agent_integrations()
-        .get_recall_calendar_status()
-        .await
-        .unwrap();
-
-    let _ = result;
-}
-
 // --- Tenor ---
 
 #[tokio::test]
@@ -1098,31 +1018,6 @@ async fn tenor_search_posts_body() {
     let result = client
         .agent_integrations()
         .tenor_search(&json!({"q": "cat"}))
-        .await
-        .unwrap();
-
-    let _ = result;
-}
-
-// --- Twilio ---
-
-#[tokio::test]
-async fn twilio_call_posts_body() {
-    let server = MockServer::start().await;
-    Mock::given(method("POST"))
-        .and(path("/agent-integrations/twilio/call"))
-        .and(body_json(json!({"to": "+15550001111"})))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_json(json!({"success": true, "data": {"callSid": "CA1"}})),
-        )
-        .mount(&server)
-        .await;
-
-    let client = TinyHumansClient::new(server.uri());
-    let result = client
-        .agent_integrations()
-        .twilio_call(&json!({"to": "+15550001111"}))
         .await
         .unwrap();
 
@@ -1280,4 +1175,264 @@ async fn gemini_live_session_routes_are_typed() {
     assert_eq!(session.status, "CLOSED");
     assert_eq!(session.turn_count, 3);
     assert_eq!(session.usage_totals.search_queries, 1);
+}
+
+#[tokio::test]
+async fn sarvam_speech_routes_are_typed() {
+    use tinyhumans_sdk::api::agent_integration_types::{
+        SarvamSpeechToTextOptions, SarvamTextToSpeechRequest,
+    };
+    use wiremock::matchers::body_string_contains;
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/agent-integrations/sarvam/speech-to-text"))
+        .and(body_string_contains("name=\"language_code\"\r\n\r\nhi-IN"))
+        .and(body_string_contains("name=\"with_timestamps\"\r\n\r\ntrue"))
+        .and(body_string_contains("filename=\"clip.wav\""))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "success": true,
+            "data": {
+                "request_id": "r1", "transcript": "namaste", "language_code": "hi-IN",
+                "durationSeconds": 2.2, "costUsd": 0.0003
+            }
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/agent-integrations/sarvam/text-to-speech"))
+        .and(body_json(json!({
+            "text": "नमस्ते", "language_code": "hi-IN", "speaker": "shubh"
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "success": true,
+            "data": {"request_id": "r2", "audios": ["UklGRg=="], "characters": 6, "costUsd": 0.0003}
+        })))
+        .mount(&server)
+        .await;
+
+    let client = TinyHumansClient::new(server.uri());
+    let api = client.agent_integrations();
+    let stt = api
+        .sarvam_speech_to_text(
+            "clip.wav",
+            vec![0_u8; 8],
+            &SarvamSpeechToTextOptions {
+                language_code: Some("hi-IN".into()),
+                with_timestamps: Some(true),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(stt.transcript, "namaste");
+    assert_eq!(stt.duration_seconds, 2.2);
+    assert_eq!(stt.language_code.as_deref(), Some("hi-IN"));
+
+    let tts = api
+        .sarvam_text_to_speech(&SarvamTextToSpeechRequest {
+            text: "नमस्ते".into(),
+            language_code: "hi-IN".into(),
+            speaker: Some("shubh".into()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(tts.audios, vec!["UklGRg==".to_string()]);
+    assert_eq!(tts.characters, 6);
+}
+
+#[tokio::test]
+async fn sarvam_chat_and_live_routes_are_typed() {
+    use tinyhumans_sdk::api::agent_integration_types::{
+        SarvamLiveSessionRequest, SarvamLiveSpeech, SarvamLiveTranscription,
+    };
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/agent-integrations/sarvam/chat/completions"))
+        .and(body_json(json!({
+            "model": "sarvam-105b",
+            "messages": [{"role": "user", "content": "hi"}]
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": "c1", "object": "chat.completion", "model": "sarvam-105b",
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}}],
+            "usage": {"prompt_tokens": 21, "completion_tokens": 2, "total_tokens": 23}
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/agent-integrations/sarvam/live/sessions"))
+        .and(body_json(json!({
+            "mode": "transcribe", "language_code": "ta-IN", "maxMinutes": 5
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "success": true,
+            "data": {
+                "sessionId": "s1", "ticket": "t1",
+                "wsUrl": "wss://api.example.com/agent-integrations/sarvam/live/ws?ticket=t1",
+                "ticketExpiresAt": "2026-10-06T00:01:00.000Z",
+                "model": "saaras:v4", "mode": "transcribe", "maxMinutes": 5, "reserveUsd": 0.5
+            }
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/agent-integrations/sarvam/live/sessions"))
+        .and(body_json(
+            json!({"mode": "speech", "language_code": "hi-IN"}),
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "success": true,
+            "data": {
+                "sessionId": "s2", "ticket": "t2", "wsUrl": "wss://x/ws?ticket=t2",
+                "ticketExpiresAt": "2026-10-06T00:01:00.000Z",
+                "model": "bulbul:v3", "mode": "speech", "maxMinutes": 60
+            }
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/agent-integrations/sarvam/live/sessions/s1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "success": true,
+            "data": {
+                "sessionId": "s1", "mode": "transcribe", "model": "saaras:v4",
+                "status": "CLOSED", "maxMinutes": 5, "chargedUsd": 0.0004,
+                "closeReason": "session_end",
+                "usageTotals": {"audioSeconds": 2.79, "characters": 0}
+            }
+        })))
+        .mount(&server)
+        .await;
+
+    let client = TinyHumansClient::new(server.uri());
+    let api = client.agent_integrations();
+    let chat = api
+        .sarvam_chat_completion(&json!({
+            "model": "sarvam-105b",
+            "messages": [{"role": "user", "content": "hi"}]
+        }))
+        .await
+        .unwrap();
+    assert_eq!(chat["choices"][0]["message"]["content"], "ok");
+
+    let ticket = api
+        .sarvam_create_live_session(&SarvamLiveSessionRequest::Transcribe(
+            SarvamLiveTranscription {
+                language_code: Some("ta-IN".into()),
+                max_minutes: Some(5),
+                ..Default::default()
+            },
+        ))
+        .await
+        .unwrap();
+    assert!(ticket.ws_url.ends_with("ticket=t1"));
+    assert_eq!(ticket.reserve_usd, 0.5);
+
+    let speech = api
+        .sarvam_create_live_session(&SarvamLiveSessionRequest::Speech(SarvamLiveSpeech {
+            language_code: "hi-IN".into(),
+            ..Default::default()
+        }))
+        .await
+        .unwrap();
+    assert_eq!(speech.model, "bulbul:v3");
+
+    let session = api.sarvam_live_session("s1").await.unwrap();
+    assert_eq!(session.status, "CLOSED");
+    assert_eq!(session.usage_totals.audio_seconds, 2.79);
+}
+
+#[tokio::test]
+async fn sarvam_voice_agent_session_is_typed() {
+    use tinyhumans_sdk::api::agent_integration_types::{SarvamLiveAgent, SarvamLiveSessionRequest};
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/agent-integrations/sarvam/live/sessions"))
+        .and(body_json(json!({
+            "mode": "agent",
+            "app_id": "support",
+            "output_sample_rate": 22050,
+            "agent_variables": {"plan": "pro"}
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "success": true,
+            "data": {
+                "sessionId": "s3", "ticket": "t3", "wsUrl": "wss://x/ws?ticket=t3",
+                "ticketExpiresAt": "2026-10-07T00:01:00.000Z",
+                "model": "support", "mode": "agent", "maxMinutes": 60, "reserveUsd": 0.5
+            }
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/agent-integrations/sarvam/live/sessions/s3"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "success": true,
+            "data": {
+                "sessionId": "s3", "mode": "agent", "model": "support",
+                "status": "CLOSED", "maxMinutes": 60, "chargedUsd": 0.01,
+                "closeReason": "interaction_end",
+                "usageTotals": {"audioSeconds": 0, "characters": 0, "agentSeconds": 42.5}
+            }
+        })))
+        .mount(&server)
+        .await;
+
+    let client = TinyHumansClient::new(server.uri());
+    let api = client.agent_integrations();
+    let mut variables = serde_json::Map::new();
+    variables.insert("plan".into(), json!("pro"));
+    let ticket = api
+        .sarvam_create_live_session(&SarvamLiveSessionRequest::Agent(SarvamLiveAgent {
+            app_id: "support".into(),
+            output_sample_rate: Some(22050),
+            agent_variables: Some(variables),
+            ..Default::default()
+        }))
+        .await
+        .unwrap();
+    assert_eq!(ticket.mode, "agent");
+
+    let session = api.sarvam_live_session("s3").await.unwrap();
+    assert_eq!(session.usage_totals.agent_seconds, 42.5);
+}
+
+// `download_file` answers with a redirect to presigned storage on another
+// origin. The SDK follows that one hop without its own credentials.
+#[tokio::test]
+async fn file_download_follows_presigned_redirect_without_credentials() {
+    let storage = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/bucket/file_1"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes([7_u8, 8]))
+        .mount(&storage)
+        .await;
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(
+            "/agent-integrations/file-storage/files/file_1/download",
+        ))
+        .respond_with(ResponseTemplate::new(302).insert_header(
+            "Location",
+            format!("{}/bucket/file_1?sig=abc", storage.uri()).as_str(),
+        ))
+        .mount(&server)
+        .await;
+
+    let bytes = TinyHumansClient::new(server.uri())
+        .with_api_key(Some("k".into()))
+        .with_token(Some("t".into()))
+        .agent_integrations()
+        .download_file("file_1")
+        .await
+        .unwrap();
+    assert_eq!(bytes, vec![7, 8]);
+    for request in storage.received_requests().await.unwrap() {
+        assert!(request.headers.get("x-api-key").is_none());
+        assert!(request.headers.get("authorization").is_none());
+    }
 }

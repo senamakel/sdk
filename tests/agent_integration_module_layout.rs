@@ -24,10 +24,9 @@ fn every_provider_has_its_own_module() {
     assert_named::<split::openrouter_media::OpenRouterImageRequest>(std::marker::PhantomData);
     assert_named::<split::parallel::ParallelChatRequest>(std::marker::PhantomData);
     assert_named::<split::pricing::IntegrationPricingResponse>(std::marker::PhantomData);
-    assert_named::<split::recall_calendar::RecallCalendarStatus>(std::marker::PhantomData);
+    assert_named::<split::sarvam::SarvamTextToSpeechRequest>(std::marker::PhantomData);
     assert_named::<split::tenor::TenorSearchRequest>(std::marker::PhantomData);
     assert_named::<split::tinyfish::TinyFishSearchRequest>(std::marker::PhantomData);
-    assert_named::<split::twilio::TwilioCallRequest>(std::marker::PhantomData);
 }
 
 /// The historical flat path must alias the very same types, not copies of them.
@@ -36,17 +35,17 @@ fn the_pre_split_types_path_still_resolves() {
     fn assert_same_type<T>(_: &T, _: &T) {}
 
     assert_same_type(
-        &flat::TwilioCallRequest {
-            to: "+15550100".into(),
-            message: None,
-            twiml: None,
-            url: None,
+        &flat::TenorSearchRequest {
+            query: "cat".into(),
+            limit: None,
+            content_filter: None,
+            pos: None,
         },
-        &split::twilio::TwilioCallRequest {
-            to: "+15550100".into(),
-            message: None,
-            twiml: None,
-            url: None,
+        &split::tenor::TenorSearchRequest {
+            query: "cat".into(),
+            limit: None,
+            content_filter: None,
+            pos: None,
         },
     );
     // The module-root glob re-export, which is what `AgentIntegrationsApi`

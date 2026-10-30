@@ -5,13 +5,14 @@
 //! escape hatch for routes not yet surfaced as typed methods.
 
 use generated_public_routes::{PUBLIC_ROUTES, UNEXPOSED_ROUTES};
-use percent_encoding::{utf8_percent_encode, AsciiSet, NON_ALPHANUMERIC};
+use percent_encoding::{percent_decode_str, utf8_percent_encode, AsciiSet, NON_ALPHANUMERIC};
 use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION, CONTENT_TYPE};
 use reqwest::{Client as ReqwestClient, Method};
 use serde_json::Value;
 use url::Url;
 
 pub mod api;
+pub mod classify;
 pub mod generated_public_routes;
 pub mod jwt;
 #[cfg(feature = "socket")]
@@ -50,6 +51,9 @@ pub enum Error {
     Header(#[from] reqwest::header::InvalidHeaderValue),
     #[error("response decoding failed: {0}")]
     Decode(#[from] serde_json::Error),
+    /// A bounded request received more response bytes than its budget.
+    #[error("response exceeds {max_bytes} bytes")]
+    ResponseTooLarge { max_bytes: usize },
     #[cfg(feature = "socket")]
     #[error("a bearer token is required for socket.io connections")]
     MissingSocketToken,
@@ -123,8 +127,10 @@ impl TinyHumansClient {
 
     /// Use a caller-supplied [`reqwest::Client`] instead of the crate default.
     ///
-    /// The default client is `reqwest::Client::new()`: bundled rustls roots, no
-    /// timeout, no proxy configuration. That is a reasonable default for a
+    /// The default client is reqwest's default with bundled rustls roots, no
+    /// timeout, no proxy configuration, following redirects only within the
+    /// original origin. A supplied client must not follow cross-origin
+    /// redirects either: the SDK sends the API key as `x-api-key`. That is a reasonable default for a
     /// standalone script but wrong for an embedded host, which needs the SDK's
     /// requests to share its own transport policy — TLS backend, timeouts,
     /// proxy, redirect policy, connection pool.
@@ -262,7 +268,10 @@ impl HttpClient {
             base_url: base_url.into().trim_end_matches('/').to_owned(),
             token: None,
             api_key: None,
-            client: ReqwestClient::new(),
+            client: ReqwestClient::builder()
+                .redirect(same_origin_redirects())
+                .build()
+                .expect("default reqwest client builds"),
             default_headers: HeaderMap::new(),
         }
     }
@@ -335,6 +344,34 @@ impl HttpClient {
         path: &str,
         form: reqwest::multipart::Form,
     ) -> Result<Value, Error> {
+        self.post_multipart_inner(path, form, None).await
+    }
+
+    /// POST multipart data with a hard response byte budget.
+    ///
+    /// The limit applies to success and error bodies while they are streamed,
+    /// before JSON decoding. Credential echoes in rejected response bodies are
+    /// redacted without changing the successful response or envelope semantics.
+    ///
+    /// # Errors
+    /// Returns [`Error::ResponseTooLarge`] if the response exceeds the budget,
+    /// or the normal route, transport, status and envelope errors.
+    pub async fn post_multipart_with_response_limit(
+        &self,
+        path: &str,
+        form: reqwest::multipart::Form,
+        max_response_bytes: usize,
+    ) -> Result<Value, Error> {
+        self.post_multipart_inner(path, form, Some(max_response_bytes))
+            .await
+    }
+
+    async fn post_multipart_inner(
+        &self,
+        path: &str,
+        form: reqwest::multipart::Form,
+        max_response_bytes: Option<usize>,
+    ) -> Result<Value, Error> {
         reject_unexposed_route(&Method::POST, path)?;
         let url = self.url(path, &[])?;
         // A multipart request's `Content-Type` (`multipart/form-data; boundary=…`)
@@ -346,7 +383,7 @@ impl HttpClient {
         // unchanged) so `.multipart()` can set the correct one.
         let mut headers = self.headers()?;
         headers.remove(CONTENT_TYPE);
-        let response = self
+        let mut response = self
             .client
             .post(url)
             .headers(headers)
@@ -354,19 +391,52 @@ impl HttpClient {
             .send()
             .await?;
         let status = response.status();
-        let text = response.text().await?;
-        let value = if text.is_empty() {
+        let text = if let Some(max_bytes) = max_response_bytes {
+            let mut bytes = Vec::new();
+            while let Some(chunk) = response.chunk().await? {
+                if bytes.len().saturating_add(chunk.len()) > max_bytes {
+                    return Err(Error::ResponseTooLarge { max_bytes });
+                }
+                bytes.extend_from_slice(&chunk);
+            }
+            String::from_utf8_lossy(&bytes).into_owned()
+        } else {
+            response.text().await?
+        };
+        let mut value = if text.is_empty() {
             Value::Null
         } else {
             serde_json::from_str(&text).unwrap_or(Value::String(text))
         };
+        if max_response_bytes.is_some() && !status.is_success() {
+            redact_credential_echoes(
+                &mut value,
+                &[self.token.as_deref(), self.api_key.as_deref()],
+            );
+        }
         if !status.is_success() {
             return Err(Error::Status {
                 status: status.as_u16(),
                 body: value,
             });
         }
-        unwrap_envelope(value)
+        let mut result = unwrap_envelope(value);
+        if max_response_bytes.is_some() {
+            if let Err(Error::Envelope {
+                error,
+                error_code,
+                details,
+            }) = &mut result
+            {
+                let secrets = normalized_secrets(&[self.token.as_deref(), self.api_key.as_deref()]);
+                redact_text(error, &secrets);
+                if let Some(code) = error_code {
+                    redact_text(code, &secrets);
+                }
+                redact_value(details, &secrets);
+            }
+        }
+        result
     }
 
     /// Send `body` as-is under `content_type` (a file upload that is not
@@ -410,10 +480,8 @@ impl HttpClient {
         self.send_bytes_query(method, path, &[]).await
     }
 
-    /// [`Self::send_bytes`] with query parameters. Kept separate so the query
-    /// goes through [`Self::url`] rather than being appended to `path`, which
-    /// would defeat the unexposed-route check — that matches on path segments,
-    /// and a trailing `?...` would make the last segment miss its template.
+    /// [`Self::send_bytes`] with query parameters, which go through
+    /// `Self::url` rather than being appended to `path`.
     pub async fn send_bytes_query(
         &self,
         method: Method,
@@ -442,6 +510,37 @@ impl HttpClient {
             .headers(self.headers()?)
             .send()
             .await?;
+        Self::read_bytes(response).await
+    }
+
+    /// GET a download route whose answer is a redirect to presigned storage on
+    /// another origin, and follow that one hop without the SDK's credentials.
+    pub(crate) async fn send_bytes_following_presigned(
+        &self,
+        path: &str,
+    ) -> Result<Vec<u8>, Error> {
+        reject_unexposed_route(&Method::GET, path)?;
+        let url = self.url(path, &[])?;
+        let response = self
+            .client
+            .get(url.clone())
+            .headers(self.headers()?)
+            .send()
+            .await?;
+        let location = response
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .and_then(|value| value.to_str().ok())
+            .filter(|_| response.status().is_redirection())
+            .and_then(|location| url.join(location).ok());
+        let response = match location {
+            Some(location) => self.client.get(location).send().await?,
+            None => response,
+        };
+        Ok(Self::read_bytes(response).await?.0)
+    }
+
+    async fn read_bytes(response: reqwest::Response) -> Result<(Vec<u8>, Option<String>), Error> {
         let status = response.status();
         let content_type = response
             .headers()
@@ -537,9 +636,43 @@ fn unwrap_envelope(body: Value) -> Result<Value, Error> {
     }
 }
 
+/// Follow a redirect only within the origin of the original request: the SDK
+/// sends `x-api-key`, a custom header reqwest does not strip across origins.
+fn same_origin_redirects() -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(|attempt| {
+        let first = &attempt.previous()[0];
+        if attempt.previous().len() > 10 {
+            attempt.error("too many redirects")
+        } else if attempt.url().origin() == first.origin() {
+            attempt.follow()
+        } else {
+            attempt.stop()
+        }
+    })
+}
+
+/// `Url::parse` resolves `.`/`..` segments (also percent-encoded, also split
+/// by `\` or tab/newline) so they would re-target the request.
+fn has_dot_segment(path: &str) -> bool {
+    let path = path.split(['?', '#']).next().unwrap_or_default();
+    path.contains(['\t', '\n', '\r'])
+        || path.split(['/', '\\']).any(|segment| {
+            matches!(
+                &*percent_decode_str(segment).decode_utf8_lossy(),
+                "." | ".."
+            )
+        })
+}
+
 fn reject_unexposed_route(method: &Method, path: &str) -> Result<(), Error> {
-    let blocked =
-        route_matches(UNEXPOSED_ROUTES, method, path) || is_structurally_unexposed(method, path);
+    let blocked = has_dot_segment(path)
+        || match parsed_path(path) {
+            Some(parsed) => {
+                route_matches(UNEXPOSED_ROUTES, method, &parsed)
+                    || is_structurally_unexposed(method, &parsed)
+            }
+            None => true,
+        };
     if blocked {
         Err(Error::RouteNotExposed(
             method.as_str().to_owned(),
@@ -548,6 +681,30 @@ fn reject_unexposed_route(method: &Method, path: &str) -> Result<(), Error> {
     } else {
         Ok(())
     }
+}
+
+/// The path the server will route, parsed the way [`HttpClient::url`] parses
+/// it (a `?`/`#` suffix is dropped and `\` reads as `/`), with each segment
+/// percent-decoded once and lower-cased. Gating the raw string instead lets
+/// `/internal?x`, `\internal`, `/%69nternal` or `/Internal` slip past. An
+/// escaped `/` stays inside its segment, as routing keeps it (`wh%2F1` is one
+/// id). `None` (refuse) when the path does not parse or a segment decodes to
+/// invalid UTF-8.
+fn parsed_path(path: &str) -> Option<String> {
+    let normalized = if path.starts_with('/') {
+        path.to_owned()
+    } else {
+        format!("/{path}")
+    };
+    let url = Url::parse(&format!("http://gate.invalid{normalized}")).ok()?;
+    url.path()
+        .split('/')
+        .map(|segment| {
+            let decoded = percent_decode_str(segment).decode_utf8().ok()?;
+            Some(decoded.replace('/', "%2f").to_ascii_lowercase())
+        })
+        .collect::<Option<Vec<_>>>()
+        .map(|segments| segments.join("/"))
 }
 
 fn route_matches(routes: &[(&str, &str)], method: &Method, path: &str) -> bool {
@@ -562,21 +719,30 @@ fn route_matches(routes: &[(&str, &str)], method: &Method, path: &str) -> bool {
                 .iter()
                 .zip(&request_segments)
                 .all(|(expected, actual)| {
-                    (expected.starts_with('{') && expected.ends_with('}')) || expected == actual
+                    (expected.starts_with('{') && expected.ends_with('}'))
+                        || expected.eq_ignore_ascii_case(actual)
                 })
     })
 }
 
 fn is_structurally_unexposed(method: &Method, path: &str) -> bool {
     let segments = path.trim_matches('/').split('/').collect::<Vec<_>>();
-    if segments.contains(&"admin") {
+    // For the deny names only, also split at an escaped `/` (kept as `%2f` by
+    // `parsed_path`): a proxy that decodes `%2F` routes `/a%2fadmin%2Fx` as
+    // `/a/admin/x`.
+    let pieces = segments
+        .iter()
+        .flat_map(|segment| segment.split("%2f"))
+        .filter(|piece| !piece.is_empty())
+        .collect::<Vec<_>>();
+    if pieces.contains(&"admin") {
         return true;
     }
 
     // Service-to-service routes live under `/internal` and are deliberately
     // absent from the published spec, so they cannot be listed by name here.
     // No SDK user holds the credentials they take; block the whole prefix.
-    if segments.first() == Some(&"internal") {
+    if pieces.first() == Some(&"internal") {
         return true;
     }
 
@@ -587,211 +753,61 @@ fn is_structurally_unexposed(method: &Method, path: &str) -> bool {
 }
 
 #[cfg(test)]
-mod exclusion_tests {
-    use super::*;
+#[path = "lib_exclusion_tests.rs"]
+mod exclusion_tests;
 
-    #[test]
-    fn every_admin_and_webhook_route_is_rejected_by_the_raw_transport_gate() {
-        // Pinned so the list can only ever be reviewed upward. A regenerated
-        // spec that stopped describing admin or webhook routes would otherwise
-        // shrink this list and silently unblock them at the raw transport.
-        //
-        // 50 -> 49: the prior resync (from main's spend-policy PR) had synced
-        // against a spec that documented four `*/spend-policy` routes
-        // (`GET /spend-policy`, `PUT /spend-policy`,
-        // `PUT /api-keys/{keyId}/spend-policy`, and the admin
-        // `PATCH /admin/users/{userId}/spend-policy` counted here) that the
-        // backend never actually implements — it only has `spend-caps`
-        // (`src/routes/spendCaps.ts` et al. in the backend repo; a full-text
-        // search for `spend-policy` there finds zero matches). Resyncing
-        // against a fresh, accurate spec dropped the one phantom admin entry,
-        // taking this count from 50 back down to 49. The other three
-        // `spend-policy` routes were never in this admin/webhook list to begin
-        // with, since only `/admin/**` and undocumented `/webhooks/**` routes
-        // land here.
-        //
-        // 49 -> 51: the two service-token operations on
-        // `/opencompany/instances/{slug}/inference-key`. The orchestrator calls
-        // them with a shared secret no SDK user holds, so they are excluded
-        // from the client and blocked at the raw transport.
-        //
-        // 51 -> 54: the three write operations on `/admin/blog-posts`, which
-        // the admin dashboard drives with the admin service token. The two
-        // public `/blog/posts` reads that arrived with them are ordinary
-        // user-facing API and are exposed; only the authoring side is blocked.
-        //
-        // 54 -> 55: `POST /opencompany/instances/{slug}/usage`, which the
-        // orchestrator calls to report how long each hosted company held its
-        // memory so the platform can bill it. Service-token authenticated like
-        // the two `inference-key` operations above, and excluded for the same
-        // reason: no SDK consumer holds the shared secret, and a client method
-        // for it would only ever produce a 401. The user-facing read of the
-        // same data is `GET /opencompany/instances/usage`, which is exposed.
-        //
-        // 55 -> 56: `POST /admin/blog-images`, the multipart upload the
-        // dashboard uses for a post's cover and body figures. Same service
-        // token as the other blog writes, so it is blocked alongside them.
-        //
-        // 56 -> 58: two service-to-service callbacks (since removed; see -> 60).
-        //
-        // 58 -> 59: `PUT /opencompany/instances/{slug}/orchestrator`, the
-        // orchestrator's own service-token-authenticated callback (same shape
-        // as the two `inference-key` operations and `.../usage` above), added
-        // alongside `POST /opencompany/instances/{slug}/usage`.
-        //
-        // 59 -> 61: `PUT` and `DELETE /opencompany/orchestrators/{id}/token`,
-        // the fleet's service-token-authenticated orchestrator token
-        // registration, first synced alongside the Gemini routes.
-        // Note: This assertion reflects the count when synced against the
-        // deployed OpenAPI spec. When the backend branch adds routes that
-        // aren't yet deployed, the local count may differ; the RETAINED_UNEXPOSED_ROUTES
-        // in sync-openapi.mjs preserves admin/webhook operations regardless.
-        // -> 59: every `/internal/*` service callback leaves: they are no
-        // longer in the published spec, so this public list must not name
-        // them, and `is_structurally_unexposed` blocks the whole `/internal`
-        // prefix instead (see `internal_routes_are_blocked_without_being_named`).
-        // The telemetry ingestion endpoint (OTEL / Langfuse) does NOT belong
-        // here: it takes a normal user bearer token, not a service token, so
-        // it stays in PUBLIC_ROUTES.
-        assert_eq!(UNEXPOSED_ROUTES.len(), 59);
-        for (method, template) in UNEXPOSED_ROUTES {
-            let concrete_path = template
-                .split('/')
-                .map(|segment| {
-                    if segment.starts_with('{') && segment.ends_with('}') {
-                        "example"
-                    } else {
-                        segment
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join("/");
-            let method = Method::from_bytes(method.as_bytes()).unwrap();
-            assert!(
-                matches!(
-                    reject_unexposed_route(&method, &concrete_path),
-                    Err(Error::RouteNotExposed(_, _))
-                ),
-                "{} {template} was not blocked",
-                method.as_str()
-            );
-        }
+fn normalized_secrets<'a>(secrets: &[Option<&'a str>]) -> Vec<&'a str> {
+    let mut secrets: Vec<_> = secrets
+        .iter()
+        .flatten()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .collect();
+    secrets.sort_by_key(|secret| std::cmp::Reverse(secret.len()));
+    secrets.dedup();
+    secrets
+}
+
+fn redact_credential_echoes(value: &mut Value, secrets: &[Option<&str>]) {
+    redact_value(value, &normalized_secrets(secrets));
+}
+
+fn redact_text(text: &mut String, secrets: &[&str]) {
+    let marker = "[REDACTED]";
+    let replacement = if secrets.iter().any(|secret| marker.contains(secret)) {
+        ""
+    } else {
+        marker
+    };
+    for secret in secrets {
+        *text = text.replace(secret, replacement);
     }
-
-    /// Service-to-service routes are undocumented, so they cannot appear in
-    /// the generated lists; the raw transport refuses the whole prefix.
-    #[test]
-    fn internal_routes_are_blocked_without_being_named() {
-        assert!(!UNEXPOSED_ROUTES
-            .iter()
-            .any(|(_, p)| p.starts_with("/internal")));
-        assert!(!PUBLIC_ROUTES
-            .iter()
-            .any(|(_, p)| p.starts_with("/internal")));
-        for (method, path) in [
-            (Method::GET, "/internal/anything"),
-            (Method::POST, "/internal/some/deeper/route"),
-            (Method::DELETE, "/internal"),
-        ] {
-            assert!(
-                matches!(
-                    reject_unexposed_route(&method, path),
-                    Err(Error::RouteNotExposed(_, _))
-                ),
-                "{method} {path} was not blocked"
-            );
-        }
-        // A segment merely named `internal` further down is not the prefix.
-        assert!(!is_structurally_unexposed(&Method::GET, "/teams/internal"));
-    }
-
-    /// Team-scoped operations gated by the team-admin *role* are not platform
-    /// administration and must stay reachable. Their OpenAPI summaries read
-    /// "(admin only)", which the generator's admin heuristic would otherwise
-    /// exclude — that broke OpenHuman's `team_remove_member`.
-    #[test]
-    fn team_role_gated_operations_are_not_treated_as_platform_admin() {
-        for (method, path) in [
-            ("PUT", "/teams/{teamId}"),
-            ("DELETE", "/teams/{teamId}/members/{userId}"),
-            ("PUT", "/teams/{teamId}/members/{userId}/role"),
-        ] {
-            assert!(
-                !UNEXPOSED_ROUTES.contains(&(method, path)),
-                "{method} {path} is team-role gated, not platform-admin"
-            );
-        }
-    }
-
-    /// Genuine platform-administration operations stay blocked, including the
-    /// ones outside an `/admin` path segment that only their summary marks.
-    #[test]
-    fn platform_admin_operations_remain_blocked() {
-        for (method, path) in [
-            ("POST", "/coupons/admin"),
-            ("GET", "/coupons/admin"),
-            ("PATCH", "/feedback/{id}/status"),
-            ("POST", "/invite/campaign"),
-            ("DELETE", "/invite/campaign/{codeId}"),
-            ("POST", "/agent-integrations/composio/toolkits/refresh"),
-        ] {
-            assert!(
-                UNEXPOSED_ROUTES.contains(&(method, path)),
-                "{method} {path} is platform-admin and must stay blocked"
-            );
-        }
-    }
-
-    /// The blocked set covers webhook *receivers* only. `/webhooks/core*` is
-    /// user-owned tunnel CRUD — bearer-authenticated, user-facing, and driven
-    /// by OpenHuman — so it must stay reachable even though it shares the
-    /// `/webhooks` prefix with the receivers around it.
-    #[test]
-    fn webhook_tunnel_crud_is_not_in_the_blocked_set() {
-        for (method, path) in [
-            ("GET", "/webhooks/core"),
-            ("POST", "/webhooks/core"),
-            ("GET", "/webhooks/core/{id}"),
-            ("PATCH", "/webhooks/core/{id}"),
-            ("DELETE", "/webhooks/core/{id}"),
-            ("GET", "/webhooks/core/bandwidth"),
-        ] {
-            assert!(
-                !UNEXPOSED_ROUTES.contains(&(method, path)),
-                "{method} {path} is user-facing and must not be blocked"
-            );
-        }
-    }
-
-    #[test]
-    fn future_structurally_private_routes_are_rejected_without_regeneration() {
-        for (method, path) in [
-            (Method::POST, "/admin/future-operation"),
-            (Method::POST, "/webhooks/future-provider"),
-        ] {
-            assert!(
-                matches!(
-                    reject_unexposed_route(&method, path),
-                    Err(Error::RouteNotExposed(_, _))
-                ),
-                "{} {path} was not blocked",
-                method.as_str()
-            );
-        }
-    }
-
-    #[test]
-    fn generated_public_webhook_routes_pass_the_structural_guard() {
-        for (method, path) in [
-            (Method::GET, "/webhooks/core"),
-            (Method::GET, "/webhooks/core/example"),
-            (Method::GET, "/webhooks/core/bandwidth"),
-        ] {
-            assert!(
-                reject_unexposed_route(&method, path).is_ok(),
-                "{} {path} was blocked",
-                method.as_str()
-            );
-        }
+    // Replacement can join surrounding text into a previously removed secret.
+    if secrets.iter().any(|secret| text.contains(secret)) {
+        text.clear();
     }
 }
+
+fn redact_value(value: &mut Value, secrets: &[&str]) {
+    match value {
+        Value::String(text) => redact_text(text, secrets),
+        Value::Array(values) => {
+            for value in values {
+                redact_value(value, secrets);
+            }
+        }
+        Value::Object(values) => {
+            let original = std::mem::take(values);
+            for (mut key, mut value) in original {
+                redact_text(&mut key, secrets);
+                redact_value(&mut value, secrets);
+                values.insert(key, value);
+            }
+        }
+        _ => {}
+    }
+}
+
+#[cfg(test)]
+#[path = "lib_multipart_tests.rs"]
+mod multipart_tests;

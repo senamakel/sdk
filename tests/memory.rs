@@ -184,6 +184,25 @@ async fn derivation_status_sends_scope() {
 }
 
 #[tokio::test]
+async fn free_period_reads_the_period() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/memory/free-period"))
+        .respond_with(ok(
+            json!({"active": true, "until": "2026-11-06T00:00:00.000Z"}),
+        ))
+        .mount(&server)
+        .await;
+
+    let client = TinyHumansClient::new(server.uri());
+    let result = client.memory().free_period().await.unwrap();
+    assert_eq!(
+        *result,
+        json!({"active": true, "until": "2026-11-06T00:00:00.000Z"})
+    );
+}
+
+#[tokio::test]
 async fn upload_blob_sends_raw_bytes_with_their_type() {
     let server = MockServer::start().await;
     let bytes = vec![0x89, 0x50, 0x4e, 0x47, 0x00, 0xff];
@@ -236,4 +255,39 @@ async fn delete_blob_deletes_by_id() {
     let client = TinyHumansClient::new(server.uri());
     let result = client.memory().delete_blob("blob_abc").await.unwrap();
     assert_eq!(*result, json!({"deleted": true}));
+}
+
+#[tokio::test]
+async fn erase_scope_posts_body_and_returns_the_unwrapped_answer() {
+    let server = MockServer::start().await;
+    let body = json!({"scope": "app:brain", "audit_note": "disconnect"});
+    let answer =
+        json!({"erased": true, "scope": "app:brain", "scopes": 1, "erasure_ids": ["er_1"]});
+    Mock::given(method("POST"))
+        .and(path("/memory/v1/erasures"))
+        .and(body_json(body.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(answer.clone()))
+        .mount(&server)
+        .await;
+
+    let client = TinyHumansClient::new(server.uri());
+    let result = client.memory().erase_scope(&body).await.unwrap();
+    assert_eq!(*result, answer);
+}
+
+#[tokio::test]
+async fn erasure_status_encodes_the_id() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/memory/v1/erasures/er%2F1"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"erasure_id": "er/1", "status": "completed"})),
+        )
+        .mount(&server)
+        .await;
+
+    let client = TinyHumansClient::new(server.uri());
+    let result = client.memory().erasure_status("er/1").await.unwrap();
+    assert_eq!(result["status"], "completed");
 }

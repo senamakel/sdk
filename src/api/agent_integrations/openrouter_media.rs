@@ -236,7 +236,7 @@ pub struct OpenRouterVideoContent {
 impl AgentIntegrationsApi<'_> {
     /// Generate an image against OpenRouter with a typed request/response.
     /// Synchronous — billed at the exact `usage.cost` this response reports,
-    /// plus the configured margin. See [`super::openrouter::AgentIntegrationsApi::openrouter_create_image`]
+    /// plus the configured margin. See [`AgentIntegrationsApi::openrouter_create_image`]
     /// for the untyped/passthrough variant.
     pub async fn openrouter_images(
         &self,
@@ -251,7 +251,7 @@ impl AgentIntegrationsApi<'_> {
     }
 
     /// List image-generation models, typed. Equivalent to
-    /// [`super::openrouter::AgentIntegrationsApi::list_openrouter_image_models`].
+    /// [`AgentIntegrationsApi::list_openrouter_image_models`].
     pub async fn openrouter_image_models(
         &self,
         query: &[QueryParam],
@@ -267,7 +267,7 @@ impl AgentIntegrationsApi<'_> {
     }
 
     /// Submit a video generation job with a typed request. Asynchronous and
-    /// billed on submit — see [`super::openrouter::AgentIntegrationsApi::get_openrouter_video`]
+    /// billed on submit — see [`AgentIntegrationsApi::get_openrouter_video`]
     /// to poll and [`Self::openrouter_video_content`] / [`Self::openrouter_video_content_with_type`]
     /// to download once `status` is `"completed"`.
     pub async fn openrouter_videos(
@@ -283,7 +283,7 @@ impl AgentIntegrationsApi<'_> {
     }
 
     /// List video-generation models, typed. Equivalent to
-    /// [`super::openrouter::AgentIntegrationsApi::list_openrouter_video_models`].
+    /// [`AgentIntegrationsApi::list_openrouter_video_models`].
     pub async fn openrouter_video_models(
         &self,
         query: &[QueryParam],
@@ -299,7 +299,7 @@ impl AgentIntegrationsApi<'_> {
     }
 
     /// Download the rendered video along with its upstream `content-type`.
-    /// Prefer [`super::openrouter::AgentIntegrationsApi::openrouter_video_content`]
+    /// Prefer [`AgentIntegrationsApi::openrouter_video_content`]
     /// when the content type is not needed — this variant makes one extra
     /// header read but the same request.
     pub async fn openrouter_video_content_with_type(

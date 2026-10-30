@@ -1,7 +1,7 @@
 # Streaming
 
 The SDK supports the live transport exposed by the backend: authenticated
-Socket.IO for channels, agent media, WebRTC signaling, meeting bots, and
+Socket.IO for channels, agent media, WebRTC signaling, and
 webhook tunnels.
 
 ## Socket.IO

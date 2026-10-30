@@ -208,3 +208,51 @@ async fn successful_envelope_without_data_drops_the_success_flag() {
     let result = client.auth().me().await.unwrap();
     assert_eq!(result, json!({"jwt": "abc"}));
 }
+
+// The SDK sends the API key as the custom `x-api-key` header, which reqwest
+// does not strip on a cross-origin redirect. The default client must stop at
+// a cross-origin 30x and still follow a same-origin one.
+#[tokio::test]
+async fn default_client_follows_only_same_origin_redirects() {
+    let other = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"success": true, "data": []})),
+        )
+        .mount(&other)
+        .await;
+    let origin = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/teams"))
+        .respond_with(
+            ResponseTemplate::new(302)
+                .insert_header("Location", format!("{}/elsewhere", other.uri()).as_str()),
+        )
+        .mount(&origin)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/auth/me"))
+        .respond_with(ResponseTemplate::new(302).insert_header("Location", "/auth/me2"))
+        .mount(&origin)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/auth/me2"))
+        .and(header("x-api-key", "k"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"success": true, "data": {"id": "u_1"}})),
+        )
+        .mount(&origin)
+        .await;
+    let client = TinyHumansClient::new(origin.uri()).with_api_key(Some("k".into()));
+
+    let cross = client.teams().list_teams().await;
+    assert!(
+        matches!(cross, Err(Error::Status { status: 302, .. })),
+        "{cross:?}"
+    );
+    assert!(other.received_requests().await.unwrap().is_empty());
+
+    let same = client.raw().get("/auth/me").await.unwrap();
+    assert_eq!(same, json!({"id": "u_1"}));
+}

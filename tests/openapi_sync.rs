@@ -177,7 +177,45 @@ fn generated_rust_routes_match_the_public_manifest() {
     // The Langfuse telemetry route stays in the public surface: it takes a
     // normal user bearer token (authenticateJWT), not a service token, so it
     // is ordinary user-facing API rather than a service-to-service callback.
-    assert_eq!(manifest["source"]["operationCount"], 240);
+    // 240 -> 243: the Apify run, run-status and run-results routes returned
+    // to the deployed public spec.
+    // 243 -> 254: eleven routes, in two unrelated groups, both already on the
+    // backend `main` this syncs against.
+    //
+    // Seven are the `/memory/v1/*` family: the same hosted memory as
+    // `/memory/*`, answered in CortexDB's own dialect (its status, its body, no
+    // `{ success, data }` envelope) for a client written against the engine
+    // rather than against this API. The envelope collapses a `409` into a `400`
+    // and a `202` into a `200`, and the `cortex` memory driver's retry safety
+    // and read-after-write barrier are built on seeing both.
+    //
+    // Four are opencompany's `.../open`, `.../password`, `.../password/reset`
+    // and the `PUT` of the same password. Like the `GET /opencompany/companies`
+    // entry above, these were already public on backend `main` and absent here
+    // only because sdk main had been generated from a deployed spec that
+    // predated them; this sync is against a branch spec, so they come in with
+    // it. No exclusion counter moves: `excludedAdminOperationCount` and
+    // `excludedWebhookOperationCount` are unchanged below, and
+    // `UNEXPOSED_ROUTES` is untouched, so nothing was unblocked.
+    // 254 -> 257: the rest of CortexDB's Direct dialect — `experience/bulk`
+    // (one event per conversation turn), `beliefs/build` (on-demand
+    // consolidation) and the `beliefs` listing that reads it back. The wire's
+    // health probe, `v1/admin/health`, is deliberately not among them: no
+    // published path may carry an `admin` segment, which `rust_routes` asserts
+    // structurally below.
+    // 257 -> 262: the Sarvam integration — speech-to-text, text-to-speech,
+    // chat completions, and the streaming relay's ticket mint and status read.
+    // 262 -> 263: `GET /memory/free-period`, whether hosted memory is free
+    // right now, so a client can run background memory work at no charge.
+    // 263 -> 266: `POST /memory/v1/erasures`, `GET /memory/v1/erasures/{id}`
+    // and the hosted-memory wipe `DELETE /memory`.
+    // 266 -> 267: `GET /openai/v1/threads/{threadId}/usage`, a conversation's
+    // billed spend reconstructed from the money records.
+    // 267 -> 256: Twilio, Apify and the Recall.ai meeting-bot stack were removed
+    // from the backend: the three Apify run routes, `POST
+    // /agent-integrations/twilio/call`, the five `/agent-integrations/recall-calendar/*`
+    // routes, and `POST /mascots/join-meeting` + `GET /mascots/meetings`.
+    assert_eq!(manifest["source"]["operationCount"], 256);
     // 14 -> 13: `GET /orchestration/v1/steering` left with that family.
     assert_eq!(manifest["source"]["supplementalOperationCount"], 13);
     // 37 -> 39: the two service-token operations on
@@ -212,8 +250,15 @@ fn generated_rust_routes_match_the_public_manifest() {
     // not name them — and the SDK refuses that whole prefix structurally. The
     // Langfuse telemetry receiver is not counted here: it is ordinary public
     // API (user bearer token), so it stays in the public surface above.
-    assert_eq!(manifest["source"]["excludedAdminOperationCount"], 47);
-    assert_eq!(manifest["source"]["excludedWebhookOperationCount"], 12);
+    //
+    // 47 -> 52: the five `GET /admin/memory/*` reads (`overview`, `storage`,
+    // `top-tenants`, `tenants/{userId}`, and the new `model-usage`), the
+    // admin service token's memory aggregates. Four were already on backend
+    // `main` but never synced; none is public.
+    assert_eq!(manifest["source"]["excludedAdminOperationCount"], 52);
+    // 12 -> 13: `POST /webhooks/elevenlabs`, the ElevenLabs post-call webhook
+    // receiver (provider-signed, so excluded like every other receiver).
+    assert_eq!(manifest["source"]["excludedWebhookOperationCount"], 13);
     // 206 -> 208: the two new public opencompany routes above
     // (`GET /opencompany/companies` and `POST /opencompany/instances/{slug}/update`).
     // 208 -> 211: the three Gemini routes.
@@ -224,7 +269,17 @@ fn generated_rust_routes_match_the_public_manifest() {
     // 229 -> 226: the three Apify routes are gone with that integration.
     // 226 -> 232: the six memory routes (the telemetry route stays public).
     // 232 -> 240: the eight memory opt-in layer routes.
-    assert_eq!(rust_routes.len(), 240);
+    // 240 -> 243: the three Apify routes are back in the deployed spec.
+    // 243 -> 254: the seven `/memory/v1/*` dialect routes plus the four
+    // opencompany open/password routes — see `operationCount` above for both.
+    // 254 -> 257: `experience/bulk`, `beliefs/build` and the `beliefs` listing.
+    // 257 -> 262: the five Sarvam routes — see `operationCount` above.
+    // 262 -> 263: `GET /memory/free-period` — see `operationCount` above.
+    // 263 -> 266: the erasure routes and `DELETE /memory` — see `operationCount` above.
+    // 266 -> 267: the thread usage read — see `operationCount` above.
+    // 267 -> 256: the Twilio, Apify and meeting-bot routes left with those
+    // integrations — see `operationCount` above.
+    assert_eq!(rust_routes.len(), 256);
     assert_eq!(rust_routes, manifest_routes);
     assert!(rust_routes
         .iter()
